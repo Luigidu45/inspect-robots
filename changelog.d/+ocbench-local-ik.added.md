@@ -1,0 +1,1 @@
+**OCBench plugin:** solve world-frame UR5e/Robotiq pinch poses using isolated local kinematics, the supplied joint seed, joint limits and forward-kinematics validation without changing the simulation state.

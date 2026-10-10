@@ -288,3 +288,32 @@ def test_reset_task_joins_split_to_episode_provenance(tmp_path: Path) -> None:
     assert task.metadata["protocol"] == "capx-hanoi-reference-reset-30hz-v1"
     with pytest.raises(ValueError, match="missing"):
         hanoi_reset_task(str(split_path), str(ledger_path), split="test", num_scenes=1)
+
+
+@pytest.mark.parametrize(
+    ("position", "quat", "seed", "message"),
+    [
+        ([0, 0], [1, 0, 0, 0], [0] * 6, "expects XYZ"),
+        ([0, 0, 0], [1, 0, 0], [0] * 6, "expects XYZ"),
+        ([0, 0, 0], [1, 0, 0, 0], [0] * 7, "expects XYZ"),
+        ([float("nan"), 0, 0], [1, 0, 0, 0], [0] * 6, "finite"),
+        ([0, 0, 0], [0, 0, 0, 0], [0] * 6, "unit WXYZ"),
+        ([0, 0, 0], [2, 0, 0, 0], [0] * 6, "unit WXYZ"),
+        ([0, 0, 0], [1, 0, 0, 0], [100] * 6, "joint limits"),
+    ],
+)
+def test_ik_rejects_bad_inputs_before_solver(
+    simulator: FakeEnv, position: list[float], quat: list[float], seed: list[float], message: str
+) -> None:
+    robot = OCBenchEmbodiment()
+    robot.reset(Scene("s", "restore"))
+    with pytest.raises(ValueError, match=message):
+        robot.solve_ik(np.array(position), np.array(quat), np.array(seed))
+    assert simulator.command is None
+    robot.close()
+
+
+def test_ik_requires_initialized_robot() -> None:
+    robot = OCBenchEmbodiment()
+    with pytest.raises(RuntimeError, match="reset before"):
+        robot.solve_ik(np.zeros(3), np.array([1.0, 0.0, 0.0, 0.0]), np.zeros(6))

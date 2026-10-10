@@ -189,6 +189,80 @@ class OCBenchEmbodiment:
             self._env.close()
             self._env = None
 
+    def solve_ik(
+        self,
+        position: npt.NDArray[np.float64],
+        quaternion_wxyz: npt.NDArray[np.float64],
+        joint_seed: npt.NDArray[np.float64],
+    ) -> npt.NDArray[np.float64]:
+        """Solve a world-frame Robotiq pinch pose using isolated UR5e kinematics.
+
+        Uses only robot geometry and the supplied six-joint seed. No object
+        poses are read and no simulator step or physical state write occurs.
+        Rejects nonconverged or out-of-bounds solutions instead of clipping them.
+        This solver does not perform collision or trajectory planning.
+        """
+        if self._env is None:
+            raise RuntimeError("Call reset before solving IK")
+        pos = np.asarray(position, dtype=np.float64)
+        quat = np.asarray(quaternion_wxyz, dtype=np.float64)
+        seed = np.asarray(joint_seed, dtype=np.float64)
+        if pos.shape != (3,) or quat.shape != (4,) or seed.shape != (6,):
+            raise ValueError("IK expects XYZ (3,), WXYZ (4,), and six arm joints (6,)")
+        if not all(np.all(np.isfinite(value)) for value in (pos, quat, seed)):
+            raise ValueError("IK inputs must be finite")
+        norm = float(np.linalg.norm(quat))
+        if abs(norm - 1.0) > 1e-3:
+            raise ValueError("IK orientation must be a unit WXYZ quaternion")
+        box = self.info.action_space
+        assert box.low is not None and box.high is not None
+        if np.any(seed < box.low[:6]) or np.any(seed > box.high[:6]):
+            raise ValueError("IK seed is outside UR5e joint limits")
+
+        raw = self._env.unwrapped
+        lie = importlib.import_module("ocbench.lie")
+        mujoco = importlib.import_module("mujoco")
+        target = lie.SE3.from_rotation_and_translation(lie.SO3(quat / norm), pos)
+        attach_target = target @ raw._T_pa
+        solver = raw._ik
+        joints = np.asarray(
+            solver.solve(
+                pos=attach_target.translation(),
+                quat=attach_target.rotation().wxyz,
+                curr_qpos=seed.copy(),
+                max_iters=100,
+            ),
+            dtype=np.float64,
+        )
+        if joints.shape != (6,) or not np.all(np.isfinite(joints)):
+            raise ValueError("IK returned an invalid UR5e solution")
+        if np.any(joints < box.low[:6]) or np.any(joints > box.high[:6]):
+            raise ValueError("IK solution is outside UR5e joint limits")
+        # Refresh FK after the final solver update; the scratch model contains
+        # only the robot, not the current Hanoi objects or peg layout.
+        mujoco.mj_forward(solver._model, solver._data)
+        site_id = solver._model.site("attachment_site").id
+        achieved_attach = lie.SE3.from_rotation_and_translation(
+            lie.SO3.from_matrix(solver._data.site_xmat[site_id].reshape(3, 3)),
+            solver._data.site_xpos[site_id].copy(),
+        )
+        achieved = achieved_attach @ raw._T_pa.inverse()
+        position_error = float(np.linalg.norm(achieved.translation() - pos))
+        rotation_error = float(
+            np.linalg.norm((target.rotation().inverse() @ achieved.rotation()).log())
+        )
+        if (
+            not np.isfinite(position_error)
+            or not np.isfinite(rotation_error)
+            or position_error > 1e-3
+            or rotation_error > 1e-2
+        ):
+            raise ValueError(
+                f"IK did not converge: position_error_m={position_error:.6g}, "
+                f"orientation_error_rad={rotation_error:.6g}"
+            )
+        return joints.copy()
+
     def _joint_state(self) -> npt.NDArray[np.float32]:
         raw = self._env.unwrapped
         opening = np.clip(raw.data.qpos[raw._gripper_opening_joint_id] / 0.8, 0, 1)
