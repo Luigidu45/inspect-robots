@@ -1,0 +1,1 @@
+**Hanoi reset:** retain gripper polarity, timing and world-frame documentation for both policies. Record measured joint tracking and explicit physical failure causes as evaluation evidence. Bound CaP-X code blocks to 90 queued steps by default and discard all their motions on code failure. Add deterministic tracking validation without an LLM.

@@ -591,6 +591,74 @@ infraestructura simulada. No evalúa un LLM real ni pretende restaurar Hanoi.
 El dataset debe contener Parquet completos; una descarga parcial falla antes
 de preparar la escena.
 
+### Consumo, bloques cortos y evidencia física:
+
+El runner admite `--max-output-tokens` y `--max-cost-usd` con
+`--wire responses`, en ambos modos. El primero limita salida más razonamiento.
+El segundo usa el consumo devuelto por la API y las tarifas registradas de
+GPT-6 Astra para detenerse antes de una petición adicional. Se aplica a cada
+ensayo; una petición puede superar el umbral. Para un tope de facturación,
+configurar además un [hard limit en el proyecto de OpenAI](https://developers.openai.com/api/docs/guides/spend-limits).
+Su aplicación tampoco es instantánea: puede haber un pequeño exceso mientras
+se propaga. Una alerta de gasto no bloquea peticiones. Los controles locales
+no consultan el saldo ni cambian las herramientas de `agent`.
+
+CaP-X usa `--capx-max-queued-steps 90` por defecto, equivalente a tres segundos
+a 30 Hz. El límite incluye interpolación, pinza y repeticiones para mantener
+un objetivo. Un bloque demasiado largo o con excepción descarta sus acciones
+completas y devuelve el error al modelo. El estado de variables Python puede
+persistir. Reducir el bloque para observar entre fases del movimiento; no se
+añade otro ciclo de feedback al framework.
+
+Los resúmenes ahora contienen `task_success`, `llm_calls`, `llm_usage`,
+`estimated_cost_usd`, `robot_diagnostics`, `termination_reasons` y `errors`.
+`evaluation_status="success"` indica que se completó la evaluación; el reset
+se decide por `successful_scenes` y los scorers físicos. Las respuestas con
+error o truncadas mantienen su consumo. Si no hay información de uso o precio,
+el coste es `null`, no cero. Las tarifas y su fecha se guardan en cada reporte;
+el coste es una estimación, no una lectura de la factura o saldo.
+
+Ambas políticas reciben las convenciones reales del embodiment: pinza
+`0=cerrada`, `1=abierta`, acciones de 1/30 s, incrementos de objetivos limitados
+y diferencia entre configuración enviada y medida. IK, cuando está habilitada,
+usa XYZ del mundo y orientación WXYZ del punto de pinza Robotiq. Los diagnósticos
+de seguimiento y fallo se guardan como evidencia de evaluación, sin exponer
+posiciones de objetos a la política. Los fallos distinguen `bad_floor_contact`,
+`illegal_stack`, `outside_workspace` o un fallo sin diagnóstico específico.
+
+La siguiente ejecución real puede mantener ocho llamadas y esfuerzo `low`,
+añadiendo los límites que correspondan a tu presupuesto, por ejemplo:
+
+```bash
+# Añadir a run_reset.py para cualquiera de las políticas:
+--max-output-tokens 4096 --max-cost-usd 1
+# Opcional, exclusivamente para --policy capx:
+--capx-max-queued-steps 90
+```
+
+Los límites pueden detener el ensayo antes de acabar. Una salida truncada no
+se ejecuta y queda registrada como error. No aumentarlos automáticamente.
+Tras medir el coste y corregir la interpretación de control, comparar
+`low` contra `medium` con la misma escena y ocho llamadas; después ampliar
+llamadas si los logs muestran que ésa es la limitación.
+
+[validate_tracking.py](validate_tracking.py) mide un objetivo pequeño de
+muñeca desde tres reconstrucciones idénticas del reset, manteniéndolo durante
+1, 3 y 30 pasos. Comprueba el tiempo físico, reducción del error de esa
+articulación y ausencia de fallos. No certifica agarres ni todas las trayectorias.
+Bloquea conexiones de red y no construye ninguna política LLM:
+
+```bash
+env -u OPENAI_API_KEY -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
+  .venv-ocbench/bin/python experiments/capx_hanoi/validate_tracking.py \
+  --dataset-root datasets/ocbench-hanoi-triple-task2 \
+  --output logs/reset-tracking.json
+```
+
+`validate_assistance.py` también verifica la persistencia de uso, captura wire
+y diagnóstico para las cuatro variantes. Sus tokens y costes son ficticios;
+las respuestas están pregrabadas y no consumen API. SAM3 real sigue pendiente.
+
 ### Alcance del baseline:
 
 Este flujo queda listo para probar razonamiento visual y control joint-space.

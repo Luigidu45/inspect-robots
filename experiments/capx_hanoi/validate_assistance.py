@@ -141,7 +141,21 @@ def _smoke(
                     "content": [{"type": "output_text", "text": content}],
                 }
             ]
-        return httpx.Response(200, json={"status": "completed", "output": output})
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "model": "gpt-6-astra",
+                "output": output,
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 10,
+                    "total_tokens": 110,
+                    "input_tokens_details": {"cached_tokens": 20, "cache_write_tokens": 30},
+                    "output_tokens_details": {"reasoning_tokens": 2},
+                },
+            },
+        )
 
     def construct(**kwargs: Any) -> Any:
         if backend == "capx" and assistance == "sam3_ik":
@@ -200,6 +214,14 @@ def _smoke(
     assert summary["errored_trials"] == 0
     assert summary["total_agent_control_steps"] > 0
     assert len(calls) == 2
+    assert summary["llm_calls"] == 2
+    assert summary["llm_usage"][0]["input_tokens"] == 200
+    assert summary["llm_usage"][0]["output_tokens"] == 20
+    assert summary["estimated_cost_usd"] is not None and summary["estimated_cost_usd"] > 0
+    assert summary["robot_diagnostics"][0]["control_steps"] > 0
+    eval_log = max(output_dir.glob("ocbench*.json"), key=lambda path: path.stat().st_mtime)
+    trial_metadata = json.loads(eval_log.read_text())["samples"][0]["trial_metadata"][0]
+    assert "wire_capture" in trial_metadata and "transcript" in trial_metadata
     images = sum(
         part.get("type") == "input_image"
         for message in calls[0]["input"]
@@ -217,6 +239,9 @@ def _smoke(
         "sam3_service": ("real" if sam3_url else "mock") if assistance == "sam3_ik" else None,
         "summary": str(summary_path),
         "infrastructure_passed": True,
+        "usage_and_diagnostics_persisted": True,
+        "cost_is_scripted": True,
+        "api_requests": 0,
     }
 
 

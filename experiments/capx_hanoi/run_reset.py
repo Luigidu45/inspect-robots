@@ -35,6 +35,10 @@ def _build_policy(args: argparse.Namespace, robot: OCBenchHanoiResetEmbodiment) 
         "max_llm_calls": args.max_llm_calls,
         "prior_learnings": args.prior_learnings,
     }
+    for name in ("max_output_tokens", "max_cost_usd"):
+        value = getattr(args, name, None)
+        if value is not None:
+            common[name] = value
     if args.policy == "agent":
         try:
             from inspect_robots_agent import LLMAgentPolicy
@@ -57,6 +61,7 @@ def _build_policy(args: argparse.Namespace, robot: OCBenchHanoiResetEmbodiment) 
             "--policy capx needs inspect-robots-capx. Install that optional plugin "
             "in this interpreter. The none and ik levels need no model servers."
         ) from exc
+    queued_steps = getattr(args, "capx_max_queued_steps", None)
     return CapxPolicy(
         **common,
         camera="front",
@@ -65,7 +70,22 @@ def _build_policy(args: argparse.Namespace, robot: OCBenchHanoiResetEmbodiment) 
         ik_solver=robot.solve_ik if args.assistance in ("ik", "sam3_ik") else None,
         sam3_url=args.sam3_url or "http://127.0.0.1:8114",
         request_timeout_s=args.sam3_timeout_s,
+        max_queued_steps=90 if queued_steps is None else queued_steps,
     )
+
+
+def _attach_diagnostics(policy: Any, robot: OCBenchHanoiResetEmbodiment) -> None:
+    """Add evaluation evidence without changing the native agent's control behavior."""
+    original = getattr(policy, "on_trial_end", None)
+
+    def finish(record: Any, log_dir: str, run_id: str) -> None:
+        try:
+            if callable(original):
+                original(record, log_dir, run_id)
+        finally:
+            record.metadata["robot_diagnostics"] = robot.control_diagnostics
+
+    policy.on_trial_end = finish
 
 
 def _check_sam3(
@@ -116,6 +136,17 @@ def main() -> int:
     parser.add_argument("--split", choices=["validation", "test"], default="validation")
     parser.add_argument("--num-scenes", type=int)
     parser.add_argument("--max-llm-calls", type=int, default=8)
+    parser.add_argument("--max-output-tokens", type=int, help="Responses output plus reasoning cap")
+    parser.add_argument(
+        "--max-cost-usd",
+        type=float,
+        help="Per-trial estimated Astra spend guard; checked between requests, may overshoot once",
+    )
+    parser.add_argument(
+        "--capx-max-queued-steps",
+        type=int,
+        help="CaP-X only: maximum steps queued by one code block (default: 90 = 3 s)",
+    )
     parser.add_argument(
         "--assistance",
         choices=["none", "ik", "sam3_ik"],
@@ -154,6 +185,22 @@ def main() -> int:
     )
     parser.add_argument("--log-dir", default="logs/ocbench-hanoi-reset")
     args = parser.parse_args()
+    if args.max_output_tokens is not None and args.max_output_tokens < 1:
+        parser.error("--max-output-tokens must be positive")
+    if args.max_cost_usd is not None and (
+        not np.isfinite(args.max_cost_usd) or args.max_cost_usd <= 0
+    ):
+        parser.error("--max-cost-usd must be finite and positive")
+    if args.max_cost_usd is not None and args.model.removeprefix("openai/") != "gpt-6-astra":
+        parser.error("--max-cost-usd requires known gpt-6-astra pricing")
+    if args.wire != "responses" and (
+        args.max_output_tokens is not None or args.max_cost_usd is not None
+    ):
+        parser.error("output and cost limits require --wire responses")
+    if args.capx_max_queued_steps is not None and (
+        args.policy != "capx" or args.capx_max_queued_steps < 1
+    ):
+        parser.error("--capx-max-queued-steps requires --policy capx and a positive value")
     if args.policy == "agent" and args.assistance is not None:
         parser.error("--assistance is only supported with --policy capx")
     if args.policy == "capx" and args.images != "always":
@@ -189,6 +236,7 @@ def main() -> int:
     episode_actions = load_episode_actions(args.dataset_root, episode_ids)
     robot = OCBenchHanoiResetEmbodiment(episode_actions)
     policy = _build_policy(args, robot)
+    _attach_diagnostics(policy, robot)
     guard = ChainApprover(
         ClampApprover(robot.info.action_space), DeltaLimitApprover(robot.info.action_space)
     )
@@ -206,6 +254,9 @@ def main() -> int:
         )[0]
         successful = [sample for sample in log.samples if sample.reduced.get("success_at_end") == 1]
         successful_lengths = []
+        trial_evidence = [metadata for sample in log.samples for metadata in sample.trial_metadata]
+        usage_reports = [metadata.get("llm_usage", {}) for metadata in trial_evidence]
+        known_costs = [report.get("estimated_cost_usd") for report in usage_reports]
         for sample in successful:
             episode_length = sample.reduced.get("episode_length")
             if episode_length is not None:
@@ -240,6 +291,24 @@ def main() -> int:
             "dataset_root": str(args.dataset_root.resolve()),
             "dataset_episodes": episode_ids,
             "protocol": "ocbench-hanoi-reference-reset-30hz-v1",
+            "task_success": len(successful) == len(task.scenes),
+            "llm_calls": sum(report.get("llm_calls", 0) for report in usage_reports),
+            "llm_usage": usage_reports,
+            "estimated_cost_usd": sum(known_costs)
+            if known_costs and all(cost is not None for cost in known_costs)
+            else None,
+            "robot_diagnostics": [
+                metadata.get("robot_diagnostics", {}) for metadata in trial_evidence
+            ],
+            "termination_reasons": [
+                reason for sample in log.samples for reason in sample.termination_reasons
+            ],
+            "errors": [sample.error for sample in log.samples if sample.error],
+            "max_output_tokens": args.max_output_tokens,
+            "max_cost_usd_per_trial": args.max_cost_usd,
+            "capx_max_queued_steps": (args.capx_max_queued_steps or 90)
+            if args.policy == "capx"
+            else None,
         }
         text = json.dumps(summary, indent=2) + "\n"
         output = Path(args.log_dir)

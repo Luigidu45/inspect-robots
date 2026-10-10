@@ -231,6 +231,12 @@ def test_real_policy_factory_uses_same_astra_settings(
             "HTTP(S) base URL",
         ),
         (["--policy", "capx", "--images", "on_demand"], "requires --images always"),
+        (["--max-output-tokens", "0"], "must be positive"),
+        (["--max-cost-usd", "nan"], "finite and positive"),
+        (["--max-cost-usd", "1", "--model", "unknown"], "known gpt-6-astra pricing"),
+        (["--max-output-tokens", "100", "--wire", "chat"], "require --wire responses"),
+        (["--policy", "agent", "--capx-max-queued-steps", "90"], "requires --policy capx"),
+        (["--policy", "capx", "--capx-max-queued-steps", "0"], "positive value"),
     ],
 )
 def test_invalid_cli_combinations_fail_before_loading_data(

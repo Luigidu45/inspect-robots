@@ -49,6 +49,8 @@ class FakeEnv:
         self.seed = -1
         self.success = False
         self.failure = False
+        self.bad_floor_contact = False
+        self.illegal_stack = False
         self.healthy = True
         self.closed = False
         self.make_kwargs: dict[str, Any] = {}
@@ -96,6 +98,12 @@ class FakeEnv:
 
     def close(self) -> None:
         self.closed = True
+
+    def _has_bad_floor_contact(self) -> bool:
+        return self.bad_floor_contact
+
+    def _has_illegal_stack(self) -> bool:
+        return self.illegal_stack
 
 
 @pytest.fixture
@@ -317,3 +325,29 @@ def test_ik_requires_initialized_robot() -> None:
     robot = OCBenchEmbodiment()
     with pytest.raises(RuntimeError, match="reset before"):
         robot.solve_ik(np.zeros(3), np.array([1.0, 0.0, 0.0, 0.0]), np.zeros(6))
+
+
+def test_reset_docs_retain_gripper_timing_and_frame_conventions() -> None:
+    robot = OCBenchHanoiResetEmbodiment({0: np.zeros((1, 7))})
+    assert robot.info.docs is not None
+    assert "0 means fully CLOSED" in robot.info.docs
+    assert "1 means fully OPEN" in robot.info.docs
+    assert "30 Hz" in robot.info.docs
+    assert "world XYZ" in robot.info.docs and "WXYZ" in robot.info.docs
+
+
+def test_tracking_and_failure_evidence_stay_out_of_policy_observations(simulator: FakeEnv) -> None:
+    robot = OCBenchEmbodiment()
+    robot.reset(Scene("s", "restore"))
+    simulator.failure = True
+    simulator.bad_floor_contact = True
+    result = robot.step(Action(np.array([0.1, 0, 0, 0, 0, 0, 1.0])))
+    assert result.info["failure_reasons"] == ["bad_floor_contact"]
+    assert result.observation.extra == {}
+    assert robot.control_diagnostics["last_joint_tracking_error_rad"][0] == pytest.approx(0.1)
+    assert robot.control_diagnostics["last_gripper_tracking_error"] == pytest.approx(0.5)
+    saved = robot.control_diagnostics
+    saved["failure_reasons"].clear()
+    assert robot.control_diagnostics["failure_reasons"] == ["bad_floor_contact"]
+    robot.reset(Scene("next", "restore"))
+    assert robot.control_diagnostics == {}

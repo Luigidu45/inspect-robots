@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+from copy import deepcopy
 from dataclasses import replace
 from typing import Any
 
@@ -35,6 +36,20 @@ _ARM_HIGH = np.array([6.2831, 6.2831, 3.1415, 6.2831, 6.2831, 6.2831])
 _CAMERAS = {"front": "front", "side": "side", "wrist": "ur5e/wrist"}
 REFERENCE_IMAGES_KEY = "reference_images"
 RESET_STABILITY_STEPS = 5
+_ROBOT_DOCS = (
+    "UR5e with six absolute arm targets in radians, followed by normalized gripper opening. "
+    "Gripper 0 means fully CLOSED; 1 means fully OPEN. Measured opening can lag or be "
+    "blocked by object contact. Control runs at 30 Hz (one action is 1/30 second), with "
+    "600 Hz physics. Per-action target deltas are limited to "
+    "[0.18, 0.18, 0.18, 0.36, 0.36, 0.36] rad and 0.12 gripper opening. "
+    "These are command limits, not a guarantee of physical convergence. A requested "
+    "configuration is not evidence that the robot reached it; inspect measured joint_pos "
+    "and camera images after execution. Only RGB and joint_pos are exposed, without "
+    "depth, calibrated extrinsics or privileged object poses. When IK assistance is enabled, "
+    "its target is the "
+    "Robotiq PINCH POINT in world XYZ meters with a unit WXYZ quaternion. Generic UR5 "
+    "DH coordinates or flange coordinates must not be treated as this world pinch frame."
+)
 
 
 class OCBenchEmbodiment:
@@ -50,6 +65,7 @@ class OCBenchEmbodiment:
         self._env: Any = None
         self._instruction = ""
         self._steps = 0
+        self._control_diagnostics: dict[str, Any] = {}
         self.reset_provenance: dict[str, Any] = {}
         self.info = EmbodimentInfo(
             name="ocbench",
@@ -82,10 +98,7 @@ class OCBenchEmbodiment:
             environment_id=ENV_ID,
             environment_revision="95e3d4e16756f864b58e32a6a661286288ed3be8:30hz:20substeps",
             docs=(
-                "UR5e, six arm targets in radians then gripper opening: 0 closed, 1 open. "
-                "Use move_to_configuration for simultaneous arm and pinching motions. "
-                "Only RGB and joint_pos are available; depth, calibrated extrinsics and "
-                "privileged object poses are unavailable. Solve the three-disk Tower of "
+                _ROBOT_DOCS + " Solve the three-disk Tower of "
                 "Hanoi starting on the middle peg, ending on either outer peg."
             ),
         )
@@ -145,6 +158,7 @@ class OCBenchEmbodiment:
         }
         self._instruction = scene.instruction
         self._steps = 0
+        self._control_diagnostics = {}
         return self._observe()
 
     def step(self, action: Action) -> StepResult:
@@ -156,6 +170,7 @@ class OCBenchEmbodiment:
         self._steps += 1
         success = bool(info["success"] and info["healthy"] and not info["failure"])
         failure = bool(info["failure"] or not info["healthy"])
+        diagnostics = self._record_control(action, info)
         return StepResult(
             observation=self._observe(),
             reward=float(reward),
@@ -167,8 +182,54 @@ class OCBenchEmbodiment:
                 "failure": failure,
                 "healthy": bool(info["healthy"]),
                 "reset_provenance": dict(self.reset_provenance),
+                **diagnostics,
             },
         )
+
+    @property
+    def control_diagnostics(self) -> dict[str, Any]:
+        """Return evaluation-only tracking evidence, excluding object geometry."""
+        return deepcopy(self._control_diagnostics)
+
+    def _record_control(self, action: Action, info: dict[str, Any]) -> dict[str, Any]:
+        observed = self._joint_state().astype(np.float64)
+        requested = np.asarray(action.data, dtype=np.float64)
+        error = requested - observed
+        reasons = []
+        if not info["healthy"]:
+            reasons.append("outside_workspace")
+        if info["failure"] or not info["healthy"]:
+            for method, reason in (
+                ("_has_bad_floor_contact", "bad_floor_contact"),
+                ("_has_illegal_stack", "illegal_stack"),
+            ):
+                check = getattr(self._env.unwrapped, method, None)
+                if callable(check) and check():
+                    reasons.append(reason)
+            if not reasons:
+                reasons.append("unspecified_physical_failure")
+        previous = self._control_diagnostics
+        self._control_diagnostics = {
+            "control_steps": self._steps,
+            "control_hz": 30,
+            "max_joint_tracking_error_rad": max(
+                float(np.max(np.abs(error[:6]))),
+                previous.get("max_joint_tracking_error_rad", 0.0),
+            ),
+            "max_gripper_tracking_error": max(
+                float(abs(error[6])), previous.get("max_gripper_tracking_error", 0.0)
+            ),
+            "last_joint_tracking_error_rad": error[:6].tolist(),
+            "last_gripper_tracking_error": float(error[6]),
+            "last_requested_configuration": requested.tolist(),
+            "last_observed_configuration": observed.tolist(),
+            "failure_reasons": sorted(set(previous.get("failure_reasons", [])) | set(reasons)),
+        }
+        return {
+            "joint_tracking_error_rad": error[:6].tolist(),
+            "gripper_tracking_error": float(error[6]),
+            "failure_reasons": reasons,
+        }
 
     def _normalized_action(self, data: Any) -> npt.NDArray[np.float32]:
         """Convert one finite absolute target into OCBench's bounded delta action."""
@@ -317,7 +378,7 @@ class OCBenchHanoiResetEmbodiment(OCBenchEmbodiment):
             self.info,
             name="ocbench-hanoi-reset",
             docs=(
-                "Restore the three-disk stack on its original middle peg using the "
+                _ROBOT_DOCS + " Restore the three-disk stack on its original middle peg using the "
                 "reference images. The largest disk belongs on the bottom and the "
                 "smallest on top. Release the disks and leave them stable. The arm "
                 "may finish in any safe pose."
@@ -382,6 +443,7 @@ class OCBenchHanoiResetEmbodiment(OCBenchEmbodiment):
         self._steps += 1
         raw = self._env.unwrapped
         failure = bool(info["failure"] or not info["healthy"])
+        diagnostics = self._record_control(action, info)
         restored = bool(raw._is_tower_on_peg(raw.cur_task_info["init_peg"]))
         released = bool(self._joint_state()[-1] >= 0.5)
         self._restore_streak = self._restore_streak + 1 if restored and released else 0
@@ -400,6 +462,7 @@ class OCBenchHanoiResetEmbodiment(OCBenchEmbodiment):
                 "failure": failure,
                 "healthy": bool(info["healthy"]),
                 "reset_provenance": dict(self.reset_provenance),
+                **diagnostics,
             },
         )
 
