@@ -1,0 +1,1 @@
+**Hanoi reset experiment:** expose CaP-X none, IK and SAM3+IK levels while retaining the native agent baseline. Record comparable model and assistance settings, check SAM3 before scene preparation, and provide a pinned reset runtime, environment audit and four-mode MuJoCo infrastructure validation.

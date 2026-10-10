@@ -390,6 +390,53 @@ episodios. Si no está instalado:
 uv pip install --python /tmp/capx-hanoi-env/bin/python pyarrow huggingface-hub
 ```
 
+### Entorno local preparado y comprobación de disponibilidad:
+
+El runtime permanente es `.venv-ocbench` y los datos numéricos completos están
+en `datasets/ocbench-hanoi-triple-task2`, ambos ignorados por Git. El Parquet
+corresponde a la revisión fijada y tiene SHA-256
+`496ab4db6aa3b84a3af04d1da3ee1622cdcd9f281e857533cfc9c91c5a688811`.
+Las referencias visuales se renderizan en MuJoCo; no se necesitan vídeos.
+El dataset original incompleto de otra ruta permanece intacto.
+
+[requirements-reset.txt](requirements-reset.txt) fija las dependencias del
+runtime probado. Para recrearlo en esta máquina desde la raíz del repositorio:
+
+```bash
+uv venv --python 3.12 .venv-ocbench
+uv pip install --python .venv-ocbench/bin/python \
+  -r experiments/capx_hanoi/requirements-reset.txt \
+  -e /home/luigidu/ocbench_leonardo/ocbench \
+  -e . -e plugins/inspect-robots-agent \
+  -e plugins/inspect-robots-capx -e plugins/inspect-robots-ocbench
+```
+
+En otra máquina, cambiar la ruta de OCBench por el checkout indicado en
+`protocol.json` y descargar `meta/**` y `data/**` de la revisión fijada. No
+mezclar `.venv` de desarrollo con `.venv-ocbench`. Los comandos eliminan
+`PYTHONPATH` y deshabilitan paquetes del usuario para evitar contaminación ROS.
+
+[check_environment.py](check_environment.py) comprueba versiones, entry points,
+los 45 episodios numéricos de validación y prueba, preparación real del primer
+reset, cámaras, 30/600 Hz, IK y construcción de las
+cuatro políticas sin hacer peticiones al LLM:
+
+```bash
+env -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
+  .venv-ocbench/bin/python experiments/capx_hanoi/check_environment.py \
+  --dataset-root datasets/ocbench-hanoi-triple-task2 \
+  --output logs/reset-environment.json
+```
+
+El código de salida es 0 si las comprobaciones y configuración externa están
+listas, 2 si las comprobaciones locales pasan pero falta la variable de API o
+la URL SAM3, y 1 si falla una comprobación. Añadir `--sam3-url "$SAM3_URL"` cuando
+esté disponible para probar el servicio real. El informe nunca guarda claves
+ni afirma haber evaluado Astra o el reset autónomo. `agent`, `none` e `ik`
+pueden ejecutarse sin SAM3 una vez configurada su API de LLM. Para este
+protocolo usar `run_reset.py`: el embodiment `ocbench` del CLI genérico ejecuta
+la tarea original y por sí solo no prepara el reset desde una demostración.
+
 ### Configurar la API y ejecutar el agente nativo:
 
 La clave se coloca en una variable de entorno. No se escribe en archivos del
@@ -403,8 +450,8 @@ Prueba mínima con un episodio de validación:
 
 ```bash
 env -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
-  /tmp/capx-hanoi-env/bin/python experiments/capx_hanoi/run_reset.py \
-  --dataset-root /tmp/capx-hanoi-snapshot \
+  .venv-ocbench/bin/python experiments/capx_hanoi/run_reset.py \
+  --dataset-root datasets/ocbench-hanoi-triple-task2 \
   --policy agent --model gpt-6-astra --base-url https://api.openai.com/v1 \
   --api-key-env OPENAI_API_KEY --wire responses --effort low \
   --max-llm-calls 8 \
@@ -417,18 +464,94 @@ El modelo debe admitir imágenes y function calling. GPT-6 Astra requiere
 defecto) recibe las tres cámaras actuales en cada turno; no se levanta ningún
 servidor CaP-X.
 
-Para comparar después con CaP-X, seleccionar el backend explícitamente:
+Para comparar con CaP-X sin percepción ni IK, seleccionar `none`:
 
 ```bash
 env -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
-  /tmp/capx-hanoi-env/bin/python experiments/capx_hanoi/run_reset.py \
-  --dataset-root /tmp/capx-hanoi-snapshot \
-  --policy capx --model gpt-6-astra --base-url https://api.openai.com/v1 \
-  --api-key-env OPENAI_API_KEY --wire responses \
+  .venv-ocbench/bin/python experiments/capx_hanoi/run_reset.py \
+  --dataset-root datasets/ocbench-hanoi-triple-task2 \
+  --policy capx --assistance none --model gpt-6-astra \
+  --base-url https://api.openai.com/v1 \
+  --api-key-env OPENAI_API_KEY --wire responses --effort low --images always \
   --max-llm-calls 8 \
   --split validation --num-scenes 1 \
-  --log-dir logs/capx-hanoi-reset-astra-smoke
+  --log-dir logs/ocbench-hanoi-reset-capx-none-astra-8calls
 ```
+
+### Niveles de asistencia CaP-X:
+
+`--assistance` pertenece exclusivamente a `--policy capx`. El runner acepta
+estos tres niveles y usa `none` cuando se omite la opción:
+
+| Variante | Interfaz del LLM | Asistencia adicional | Servidores externos |
+| --- | --- | --- | --- |
+| `agent` | `move_joints`, `done`, `give_up` nativos | Ninguna | Ninguno |
+| `capx --assistance none` | Python y helpers de movimiento | Ninguna percepción o IK | Ninguno |
+| `capx --assistance ik` | Python, movimiento y `solve_ik` | IK local UR5e/Robotiq de OCBench | Ninguno |
+| `capx --assistance sam3_ik` | Python, movimiento, `segment` y `solve_ik` | SAM3 RGB e IK local | Sólo SAM3 |
+
+Los tres niveles CaP-X conservan `move_to_joints`, `move_to_configuration`,
+`open_gripper` y `close_gripper`. `ik` añade solamente `solve_ik`; `sam3_ik`
+añade además `segment`. `plan_grasp` se excluye del prompt y del namespace en
+los tres. `none` e `ik` no crean clientes de servicios; `sam3_ik` crea sólo
+un cliente SAM3. Todos usan la IK local cuando corresponde y no crean clientes
+Pyroki o Contact-GraspNet. Este filtrado controla la interfaz ofrecida, pero la
+ejecución Python conserva los privilegios del proceso y no es un sandbox de
+seguridad.
+
+Para probar `ik`, repetir el comando anterior cambiando dos argumentos:
+
+```bash
+--assistance ik --log-dir logs/ocbench-hanoi-reset-capx-ik-astra-8calls
+```
+
+La IK recibe posición XYZ en metros y orientación WXYZ unitaria del punto de
+pinzado Robotiq, en coordenadas del mundo MuJoCo. Usa la cinemática del robot
+sin leer poses de discos o postes. Su semilla son las seis articulaciones del
+último objetivo encolado, o la propiocepción actual si aún no hay movimientos.
+Calcula sobre un modelo aislado, sin avanzar la física, y rechaza soluciones
+fuera de límites o con error mayor que 1 mm o 0.01 rad. No planifica colisiones
+ni garantiza que la pose sea alcanzada tras ejecutar una acción.
+
+El plugin genérico conserva su perfil `default` anterior para otros usuarios
+que construyen `CapxPolicy` sin `assistance`. El runner lo sustituye por `none`.
+`default` y `full` no están habilitados en este experimento. Los niveles con
+Contact-GraspNet requieren primero profundidad y calibración del embodiment.
+
+Para `sam3_ik`, proporcionar un endpoint real compatible con CaP-X:
+
+```bash
+env -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
+  .venv-ocbench/bin/python experiments/capx_hanoi/run_reset.py \
+  --dataset-root datasets/ocbench-hanoi-triple-task2 \
+  --policy capx --assistance sam3_ik --sam3-url "${SAM3_URL:?Define SAM3_URL}" \
+  --model gpt-6-astra --base-url https://api.openai.com/v1 \
+  --api-key-env OPENAI_API_KEY --wire responses --effort low --images always \
+  --max-llm-calls 8 --split validation --num-scenes 1 \
+  --log-dir logs/ocbench-hanoi-reset-capx-sam3-ik-astra-8calls
+```
+
+La URL queda pendiente hasta disponer del servidor; no hay fallback silencioso.
+Sin `--sam3-url`, el runner termina antes de cargar acciones. Con una URL, envía
+una petición `/segment` sobre RGB negro de 224 x 224 antes del replay y exige
+una respuesta válida. Una lista vacía es válida para esa imagen. Si falla,
+termina antes de consumir llamadas al LLM. `--sam3-timeout-s` fija el plazo
+incluidos reintentos (30 s por defecto). El resumen registra URL, cámara `front`
+y resultado de esa comprobación, separada del rollout.
+
+SAM3 devuelve máscaras 2D y cajas en píxeles del RGB actual. No proporciona
+profundidad ni una posición XYZ en el mundo. El prompt advierte de esta
+convención y de que una máscara no puede pasarse directamente a IK. El LLM
+recibe las tres cámaras aunque `segment` opere sobre `front`.
+
+Ambas políticas usan por defecto `gpt-6-astra`, `responses`, esfuerzo `low`,
+8 llamadas y las tres cámaras actuales. CaP-X requiere `--images always`.
+`agent` conserva también su opción nativa `on_demand`; para esta comparación
+usar `always`. El resumen registra modelo, esfuerzo, imágenes, policy, nivel
+de asistencia y backend IK. Mantener los mismos episodios, splits y scorer,
+y usar directorios de logs separados. Las llamadas no equivalen a un mismo
+número de acciones: comparar también pasos de control, tiempo de inferencia,
+tiempo total, tokens y coste cuando estén disponibles.
 
 La clave se crea y administra en la configuración del proyecto de OpenAI. El
 runner sólo lee el nombre indicado por `--api-key-env`; nunca persiste su valor.
@@ -441,6 +564,32 @@ Las métricas principales son `success_rate_all_scheduled` y
 `mean_agent_steps_on_success`. Los errores permanecen en el denominador. El
 replay de preparación queda registrado como `setup_replay_steps` dentro de la
 provenance, separado de los pasos del agente.
+
+### Validar la infraestructura sin consumir API:
+
+[validate_assistance.py](validate_assistance.py) ejecuta el runner real con
+respuestas pregrabadas usando `httpx.MockTransport`. Reproduce el mismo episodio
+de validación para `agent`, `capx none`, `capx ik` y `capx sam3_ik`, comprueba las seis imágenes
+iniciales, modelo y esfuerzo, y ejecuta un movimiento corto por variante. Las
+variantes con IK verifican además tres poses próximas, un objetivo inalcanzable y
+que resolver IK no cambia `qpos`, `qvel`, `ctrl` ni el tiempo físico.
+
+```bash
+env -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
+  .venv-ocbench/bin/python experiments/capx_hanoi/validate_assistance.py \
+  --dataset-root datasets/ocbench-hanoi-triple-task2 \
+  --output-dir /tmp/capx-hanoi-assistance-check
+```
+
+Sin `--sam3-url`, SAM3 devuelve máscaras pregrabadas y sólo se verifica su
+protocolo. Con `--sam3-url "$SAM3_URL"`, la cuarta variante usa SAM3 real, mientras
+el LLM continúa pregrabado. El informe distingue `sam3_service="mock"` de
+`"real"`; estas máscaras pregrabadas nunca se usan en el runner de evaluación.
+
+El informe `assistance-smoke.json` identifica explícitamente la prueba como
+infraestructura simulada. No evalúa un LLM real ni pretende restaurar Hanoi.
+El dataset debe contener Parquet completos; una descarga parcial falla antes
+de preparar la escena.
 
 ### Alcance del baseline:
 

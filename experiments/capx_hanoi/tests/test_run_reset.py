@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import sys
@@ -56,7 +57,7 @@ def test_reset_runner_counts_success_and_sends_reference_images(
                             }
                         ),
                     }
-                ]
+                ],
             },
         )
 
@@ -78,7 +79,7 @@ def test_reset_runner_counts_success_and_sends_reference_images(
                 info={"success": True, "reset_success": True},
             )
 
-    def policy(_args: Any) -> LLMAgentPolicy:
+    def policy(_args: Any, _robot: Any) -> LLMAgentPolicy:
         return LLMAgentPolicy(
             model="scripted-test",
             base_url="http://test/v1",
@@ -132,3 +133,197 @@ def test_reset_runner_counts_success_and_sends_reference_images(
         "done",
         "give_up",
     }
+
+
+@pytest.fixture
+def runner() -> Any:
+    """Load the standalone CLI without changing its package layout."""
+    experiment = Path(__file__).parents[1]
+    sys.path.insert(0, str(experiment))
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "hanoi_reset_cli", experiment / "run_reset.py"
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.remove(str(experiment))
+
+
+@pytest.mark.parametrize(
+    ("backend", "assistance"),
+    [("agent", None), ("capx", None), ("capx", "none"), ("capx", "ik"), ("capx", "sam3_ik")],
+)
+def test_real_policy_factory_uses_same_astra_settings(
+    runner: Any, monkeypatch: pytest.MonkeyPatch, backend: str, assistance: str | None
+) -> None:
+    """Native tools stay native; CaP-X assistance affects only its helpers."""
+    import inspect_robots_agent
+    import inspect_robots_capx
+
+    original = (
+        inspect_robots_agent.LLMAgentPolicy
+        if backend == "agent"
+        else inspect_robots_capx.CapxPolicy
+    )
+    captured: dict[str, Any] = {}
+
+    def construct(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return original(
+            **kwargs, env={}, transport=httpx.MockTransport(lambda _: httpx.Response(500))
+        )
+
+    module = inspect_robots_agent if backend == "agent" else inspect_robots_capx
+    name = "LLMAgentPolicy" if backend == "agent" else "CapxPolicy"
+    monkeypatch.setattr(module, name, construct)
+    args = argparse.Namespace(
+        policy=backend,
+        assistance=assistance,
+        model="gpt-6-astra",
+        base_url="http://test/v1",
+        api_key_env="OPENAI_API_KEY",
+        wire="responses",
+        max_llm_calls=8,
+        prior_learnings=None,
+        effort="low",
+        images="always",
+        sam3_url="http://sam3.test:8114" if assistance == "sam3_ik" else None,
+        sam3_timeout_s=30.0,
+    )
+    robot = OCBenchHanoiResetEmbodiment({0: np.zeros((1, 7))})
+    policy = runner._build_policy(args, robot)
+    try:
+        assert captured["model"] == "gpt-6-astra"
+        assert captured["wire"] == "responses"
+        assert captured["effort"] == "low"
+        assert captured["max_llm_calls"] == 8
+        if backend == "agent":
+            assert "assistance" not in captured and "ik_solver" not in captured
+            assert captured["images"] == "always" and captured["depth"] == "off"
+        else:
+            assert captured["assistance"] == (assistance or "none")
+            assert policy._servers is None
+            if assistance in ("ik", "sam3_ik"):
+                assert captured["ik_solver"] == robot.solve_ik
+            else:
+                assert captured["ik_solver"] is None
+        policy.bind(robot.info)
+    finally:
+        close = getattr(policy, "close", None)
+        if callable(close):
+            close()
+        robot.close()
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        (["--policy", "agent", "--assistance", "none"], "only supported"),
+        (["--policy", "capx", "--assistance", "sam3_ik"], "requires --sam3-url"),
+        (["--policy", "agent", "--sam3-url", "http://sam3.test"], "only supported"),
+        (["--policy", "capx", "--assistance", "full"], "invalid choice"),
+        (["--sam3-timeout-s", "nan"], "finite and positive"),
+        (
+            ["--policy", "capx", "--assistance", "sam3_ik", "--sam3-url", "gpu-box:8114"],
+            "HTTP(S) base URL",
+        ),
+        (["--policy", "capx", "--images", "on_demand"], "requires --images always"),
+    ],
+)
+def test_invalid_cli_combinations_fail_before_loading_data(
+    runner: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    options: list[str],
+    message: str,
+) -> None:
+    """Do not prepare a simulation or make API calls for unsupported comparisons."""
+
+    def unexpected(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("Invalid CLI must fail before loading episodes")
+
+    monkeypatch.setattr(runner, "load_episode_actions", unexpected)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run_reset.py", "--dataset-root", "missing", "--base-url", "http://test/v1", *options],
+    )
+    with pytest.raises(SystemExit) as error:
+        runner.main()
+    assert error.value.code == 2
+    assert message in capsys.readouterr().err
+
+
+def test_sam3_preflight_failure_stops_before_dataset_replay(
+    runner: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A missing service must not consume model calls or prepare scenes."""
+
+    def failure(_args: Any) -> Any:
+        raise ConnectionError("connection refused")
+
+    def unexpected(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("Must stop before reading actions")
+
+    monkeypatch.setattr(runner, "_check_sam3", failure)
+    monkeypatch.setattr(runner, "load_episode_actions", unexpected)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_reset.py",
+            "--dataset-root",
+            "missing",
+            "--base-url",
+            "http://test/v1",
+            "--policy",
+            "capx",
+            "--assistance",
+            "sam3_ik",
+            "--sam3-url",
+            "http://sam3.test:8114",
+        ],
+    )
+    with pytest.raises(SystemExit) as error:
+        runner.main()
+    assert error.value.code == 2
+    assert "SAM3 preflight failed before scene replay" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bad_shape", [False, True])
+def test_sam3_preflight_validates_wire_and_mask_size(runner: Any, bad_shape: bool) -> None:
+    """The readiness probe must accept empty matches and reject wrong image geometry."""
+    import base64
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "http://sam3.test:8114/segment"
+        body = json.loads(request.content)
+        assert body["text_prompt"] == "disk"
+        assert base64.b64decode(body["image_base64"]).startswith(b"\x89PNG")
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "shape": [2, 2],
+                        "mask_base64": base64.b64encode(bytes(4)).decode(),
+                        "box": [0, 0, 2, 2],
+                        "score": 0.9,
+                        "label": "disk",
+                    }
+                ]
+                if bad_shape
+                else []
+            },
+        )
+
+    args = argparse.Namespace(sam3_url="http://sam3.test:8114", sam3_timeout_s=30.0)
+    if bad_shape:
+        with pytest.raises(ValueError, match="input image size"):
+            runner._check_sam3(args, transport=httpx.MockTransport(respond))
+    else:
+        report = runner._check_sam3(args, transport=httpx.MockTransport(respond))
+        assert report["status"] == "passed" and report["matches"] == 0

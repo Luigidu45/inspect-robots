@@ -4,17 +4,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
+import numpy as np
 from inspect_robots_ocbench import OCBenchHanoiResetEmbodiment, hanoi_reset_task
 from reset_data import load_episode_actions
 
 from inspect_robots import eval
 from inspect_robots.approver import ChainApprover, ClampApprover, DeltaLimitApprover
 
+if TYPE_CHECKING:
+    import httpx
 
-def _build_policy(args: argparse.Namespace) -> Any:
+
+def _build_policy(args: argparse.Namespace, robot: OCBenchHanoiResetEmbodiment) -> Any:
     """Construct only the selected optional policy backend.
 
     The native ``agent`` path never imports CaP-X, so it needs neither its
@@ -49,9 +55,39 @@ def _build_policy(args: argparse.Namespace) -> Any:
     except ImportError as exc:
         raise ImportError(
             "--policy capx needs inspect-robots-capx. Install that optional plugin "
-            "and start its requested services first."
+            "in this interpreter. The none and ik levels need no model servers."
         ) from exc
-    return CapxPolicy(**common, camera="front")
+    return CapxPolicy(
+        **common,
+        camera="front",
+        effort=args.effort,
+        assistance=args.assistance or "none",
+        ik_solver=robot.solve_ik if args.assistance in ("ik", "sam3_ik") else None,
+        sam3_url=args.sam3_url or "http://127.0.0.1:8114",
+        request_timeout_s=args.sam3_timeout_s,
+    )
+
+
+def _check_sam3(
+    args: argparse.Namespace, *, transport: httpx.BaseTransport | None = None
+) -> dict[str, Any]:
+    """Require a working segmentation protocol before preparing any reset scene."""
+    from inspect_robots_capx._servers import Sam3Client
+
+    start = time.monotonic()
+    client = Sam3Client(args.sam3_url, request_timeout_s=args.sam3_timeout_s, transport=transport)
+    try:
+        matches = client.segment(np.zeros((224, 224, 3), dtype=np.uint8), "disk")
+        if any(match["mask"].shape != (224, 224) for match in matches):
+            raise ValueError("SAM3 preflight masks must match the input image size")
+    finally:
+        client.close()
+    return {
+        "status": "passed",
+        "image": "blank-rgb-224x224",
+        "matches": len(matches),
+        "duration_s": time.monotonic() - start,
+    }
 
 
 def main() -> int:
@@ -59,7 +95,9 @@ def main() -> int:
     experiment = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-root", required=True, type=Path)
-    parser.add_argument("--model", required=True, help="Model identifier accepted by the endpoint")
+    parser.add_argument(
+        "--model", default="gpt-6-astra", help="Model identifier accepted by the endpoint"
+    )
     parser.add_argument(
         "--base-url", required=True, help="Model API base URL, including /v1 if needed"
     )
@@ -79,9 +117,21 @@ def main() -> int:
     parser.add_argument("--num-scenes", type=int)
     parser.add_argument("--max-llm-calls", type=int, default=8)
     parser.add_argument(
+        "--assistance",
+        choices=["none", "ik", "sam3_ik"],
+        help="CaP-X only: motion, local UR5e/Robotiq IK, or SAM3 plus local IK.",
+    )
+    parser.add_argument("--sam3-url", help="SAM3 base URL, required only for sam3_ik")
+    parser.add_argument(
+        "--sam3-timeout-s",
+        type=float,
+        default=30.0,
+        help="SAM3 request deadline, including retries (default: 30 s)",
+    )
+    parser.add_argument(
         "--effort",
         default="low",
-        help="Reasoning effort for --policy agent; omitted by CaP-X.",
+        help="Reasoning effort for the selected LLM policy.",
     )
     parser.add_argument(
         "--images",
@@ -104,6 +154,30 @@ def main() -> int:
     )
     parser.add_argument("--log-dir", default="logs/ocbench-hanoi-reset")
     args = parser.parse_args()
+    if args.policy == "agent" and args.assistance is not None:
+        parser.error("--assistance is only supported with --policy capx")
+    if args.policy == "capx" and args.images != "always":
+        parser.error("--policy capx currently requires --images always")
+    if args.assistance == "sam3_ik" and not args.sam3_url:
+        parser.error("--assistance sam3_ik requires --sam3-url; configure a real SAM3 endpoint")
+    if args.sam3_url and not (args.policy == "capx" and args.assistance == "sam3_ik"):
+        parser.error("--sam3-url is only supported with --policy capx --assistance sam3_ik")
+    if args.sam3_url:
+        try:
+            endpoint = urlsplit(args.sam3_url)
+            valid_url = endpoint.scheme in ("http", "https") and bool(endpoint.netloc)
+        except ValueError:
+            valid_url = False
+        if not valid_url:
+            parser.error("--sam3-url must be an HTTP(S) base URL")
+    if not np.isfinite(args.sam3_timeout_s) or args.sam3_timeout_s <= 0:
+        parser.error("--sam3-timeout-s must be finite and positive")
+    sam3_preflight = None
+    if args.assistance == "sam3_ik":
+        try:
+            sam3_preflight = _check_sam3(args)
+        except (ConnectionError, TimeoutError, ValueError, KeyError) as exc:
+            parser.error(f"SAM3 preflight failed before scene replay: {exc}")
 
     task = hanoi_reset_task(
         str(args.split_manifest),
@@ -114,7 +188,7 @@ def main() -> int:
     episode_ids = [int(scene.metadata["dataset_episode"]) for scene in task.scenes]
     episode_actions = load_episode_actions(args.dataset_root, episode_ids)
     robot = OCBenchHanoiResetEmbodiment(episode_actions)
-    policy = _build_policy(args)
+    policy = _build_policy(args, robot)
     guard = ChainApprover(
         ClampApprover(robot.info.action_space), DeltaLimitApprover(robot.info.action_space)
     )
@@ -150,11 +224,18 @@ def main() -> int:
             "mean_inference_latency_s": log.stats.mean_inference_latency_s,
             "model": args.model,
             "policy": args.policy,
+            "assistance": (args.assistance or "none") if args.policy == "capx" else None,
+            "ik_backend": "ocbench-local"
+            if args.policy == "capx" and args.assistance in ("ik", "sam3_ik")
+            else None,
+            "sam3_url": args.sam3_url if args.assistance == "sam3_ik" else None,
+            "sam3_camera": "front" if args.assistance == "sam3_ik" else None,
+            "sam3_preflight": sam3_preflight,
             "base_url": args.base_url,
             "wire": args.wire,
             "max_llm_calls": args.max_llm_calls,
-            "effort": args.effort if args.policy == "agent" else None,
-            "images": args.images if args.policy == "agent" else None,
+            "effort": args.effort,
+            "images": args.images,
             "split": args.split,
             "dataset_root": str(args.dataset_root.resolve()),
             "dataset_episodes": episode_ids,
