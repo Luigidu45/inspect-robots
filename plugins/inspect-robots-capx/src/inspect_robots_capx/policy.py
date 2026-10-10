@@ -12,6 +12,7 @@ import atexit
 import contextlib
 import copy
 import hashlib
+import json
 import os
 import re
 import sys
@@ -38,6 +39,7 @@ from inspect_robots_agent import (
     png_data_url,
     resolve_provider,
 )
+from inspect_robots_agent._capture import WireCapture, _safe
 from inspect_robots_capx._assistance import IKSolver, assistance_helpers
 from inspect_robots_capx._motion import MotionQueue
 from inspect_robots_capx._sandbox import CodeSandbox, ExecutionResult
@@ -184,6 +186,10 @@ class CapxPolicyConfig(PolicyConfig):
     prior_learnings: str | None = None
     #: SHA-256 hexdigest of the injected prior-learnings text.
     prior_learnings_sha256: str | None = None
+    max_queued_steps: int | None = None
+    max_output_tokens: int | None = None
+    max_cost_usd: float | None = None
+    wire_capture: bool = True
 
 
 class CapxPolicy(PolicyBase):
@@ -220,7 +226,22 @@ class CapxPolicy(PolicyBase):
         assistance: str = "default",
         ik_solver: IKSolver | None = None,
         service_transport: httpx.BaseTransport | None = None,
+        max_queued_steps: int | None = None,
+        max_output_tokens: int | None = None,
+        max_cost_usd: float | None = None,
+        wire_capture: bool = True,
     ) -> None:
+        if max_queued_steps is not None and (
+            isinstance(max_queued_steps, bool)
+            or not isinstance(max_queued_steps, int)
+            or max_queued_steps < 1
+        ):
+            raise ValueError("max_queued_steps must be an int >= 1")
+        if wire != "responses" and (max_output_tokens is not None or max_cost_usd is not None):
+            raise ConfigError("max_output_tokens and max_cost_usd require wire='responses'")
+        self._max_queued_steps = max_queued_steps
+        self._capture = WireCapture() if wire_capture else None
+        self._usage_totals: dict[str, int] = {}
         enabled_helpers = assistance_helpers(assistance)
         if ik_solver is not None and assistance == "none":
             raise ValueError("ik_solver requires IK assistance")
@@ -293,10 +314,14 @@ class CapxPolicy(PolicyBase):
         )
         if wire == "responses":
             self._client: ChatClient | ResponsesClient = ResponsesClient(
-                provider, transport=transport
+                provider,
+                transport=transport,
+                capture=self._capture,
+                max_output_tokens=max_output_tokens,
+                max_cost_usd=max_cost_usd,
             )
         else:
-            self._client = ChatClient(provider, transport=transport)
+            self._client = ChatClient(provider, transport=transport, capture=self._capture)
         self._servers = (
             CapxServerClients(
                 sam3_url=sam3_url,
@@ -360,6 +385,10 @@ class CapxPolicy(PolicyBase):
             max_llm_calls=max_llm_calls,
             max_code_failures=max_code_failures,
             max_speed_frac=max_speed_frac,
+            max_queued_steps=max_queued_steps,
+            max_output_tokens=max_output_tokens,
+            max_cost_usd=max_cost_usd,
+            wire_capture=wire_capture,
             request_timeout_s=request_timeout_s,
             gripper_open_is_high=gripper_open_is_high,
             transcript_echo=transcript_echo,
@@ -441,6 +470,7 @@ class CapxPolicy(PolicyBase):
                 max_speed_frac=self._max_speed_frac,
                 gripper_index=gripper_index,
                 gripper_open_is_high=self._gripper_open_is_high,
+                max_queued_steps=self._max_queued_steps,
             )
         except ValueError as exc:
             raise ValueError(f"{prefix} valid bounded motion arithmetic: {exc}") from exc
@@ -503,6 +533,15 @@ class CapxPolicy(PolicyBase):
         )
         if self._embodiment_docs is not None and self._embodiment_docs.strip():
             system += "\n\nEmbodiment notes:\n" + self._embodiment_docs.strip()
+        if self._max_queued_steps is not None:
+            system += (
+                f"\n\nEach generated code block may queue at most {self._max_queued_steps} "
+                "control steps. "
+                "Include gripper ramps and holds in this budget. Prefer one short physical "
+                "phase, then inspect the next observation. A code exception discards all "
+                "motions from that block; variables can persist. Revise recoverable errors "
+                "using the feedback. Do not infer that a queued target has been reached."
+            )
         if self._prior_learnings_text is not None:
             system = (
                 system
@@ -516,6 +555,9 @@ class CapxPolicy(PolicyBase):
         ]
         self._delta_cursor = 0
         self._calls_used = 0
+        self._usage_totals.clear()
+        if isinstance(self._client, ResponsesClient):
+            self._client.usage_ledger.reset()
         self._consecutive_failures = 0
         self._reference_images_sent = False
         if self._sandbox is not None:
@@ -529,6 +571,34 @@ class CapxPolicy(PolicyBase):
     def transcript(self) -> list[dict[str, Any]] | None:
         """Return an image-free deep copy of the current trial conversation."""
         return _sanitize(self._messages) if self._messages else None
+
+    def on_trial_start(self, scene_id: str, epoch: int, log_dir: str, run_id: str) -> None:
+        """Capture attempts using the same credential-free sink as the native agent."""
+        if self._capture is not None:
+            self._capture.begin_trial(log_dir, run_id, f"{_safe(scene_id)}-e{epoch}")
+
+    def on_trial_end(self, record: Any, log_dir: str, run_id: str) -> None:
+        """Persist usage and a portable transcript even when evaluation fails."""
+        if self._capture is not None:
+            capture_path = self._capture.end_trial()
+            if capture_path is not None:
+                record.metadata["wire_capture"] = capture_path
+        record.metadata["llm_usage"] = {
+            "llm_calls": self._calls_used,
+            **self._usage_totals,
+            **(
+                self._client.usage_ledger.report()
+                if isinstance(self._client, ResponsesClient)
+                else {}
+            ),
+        }
+        messages = self.transcript()
+        if messages:
+            relative = f"transcripts/{run_id}/{_safe(record.scene_id)}-e{record.epoch}.jsonl"
+            path = Path(log_dir) / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("".join(json.dumps(message) + "\n" for message in messages))
+            record.metadata["transcript"] = relative
 
     def transcript_delta(self) -> list[dict[str, Any]] | None:
         """Return only sanitized messages appended since the previous live-stream read."""
@@ -578,6 +648,8 @@ class CapxPolicy(PolicyBase):
             )
             llm_latency += time.monotonic() - started
             self._calls_used += 1
+            for key, value in (message.usage or {}).items():
+                self._usage_totals[key] = self._usage_totals.get(key, 0) + value
             self._messages.append(message.raw())
             reply = (message.content or "").strip()
             if reply:

@@ -1,0 +1,1 @@
+**CaP-X plugin:** discard all queued motions when generated code fails or exceeds an optional queue limit. Preserve the observed motion cursor for recovery, persist wire attempts and transcripts, and expose Responses usage, output caps and estimated-spend guards.

@@ -34,7 +34,16 @@ class MotionQueue:
         max_speed_frac: float,
         gripper_index: int,
         gripper_open_is_high: bool = True,
+        max_queued_steps: int | None = None,
     ) -> None:
+        if max_queued_steps is not None and (
+            isinstance(max_queued_steps, bool)
+            or not isinstance(max_queued_steps, int)
+            or max_queued_steps < 1
+        ):
+            raise ValueError("max_queued_steps must be an int >= 1")
+        self._max_queued_steps = max_queued_steps
+        self.limit_exceeded = False
         if len(action_space.shape) != 1:
             raise ValueError(f"motion needs a 1-D action box, got {action_space.shape}")
         if not np.isfinite(control_hz) or control_hz <= 0:
@@ -120,6 +129,7 @@ class MotionQueue:
         """Clear queued actions and the observation-derived cursor."""
         self._cursor = None
         self._actions.clear()
+        self.limit_exceeded = False
 
     def begin_turn(self, state: npt.NDArray[Any]) -> None:
         """Discard old queue state and seed this turn from observed proprioception."""
@@ -132,6 +142,7 @@ class MotionQueue:
             raise ValueError("proprioceptive reference contains a non-finite value")
         self._cursor = cursor.copy()
         self._actions.clear()
+        self.limit_exceeded = False
 
     def move_to_joints(self, joints: npt.NDArray[Any]) -> None:
         """Queue an arm target while preserving the cursor's gripper value."""
@@ -238,6 +249,15 @@ class MotionQueue:
         if not np.isfinite(headed_ratio):
             raise ValueError("motion distance is too large to interpolate safely")
         steps = max(1, math.ceil(float(headed_ratio)))
+        if (
+            self._max_queued_steps is not None
+            and len(self._actions) + steps > self._max_queued_steps
+        ):
+            self.limit_exceeded = True
+            raise ValueError(
+                f"Code would queue more than {self._max_queued_steps} control steps. "
+                "All motions from this code are discarded. Use a shorter move, then observe."
+            )
         for fraction in np.linspace(1.0 / steps, 1.0, steps):
             self._actions.append(
                 Action(data=np.clip(current + delta * fraction, self._low, self._high))

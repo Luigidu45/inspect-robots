@@ -411,7 +411,7 @@ def test_perception_only_turn_feeds_report_back_then_returns_motion() -> None:
     assert np.array_equal(chunk.actions[-1].data, np.array([0.2, 0.0, 1.0]))
 
 
-def test_failure_counter_persists_across_act_even_when_error_queued_actions() -> None:
+def test_failed_code_discards_queue_and_counts_consecutive_failures() -> None:
     script = _ScriptedTransport(
         [
             _completion(
@@ -423,11 +423,9 @@ def test_failure_counter_persists_across_act_even_when_error_queued_actions() ->
     )
     policy = _bound_policy(script, max_code_failures=2)
 
-    first = policy.act(_observation())
-    assert first.actions
-
     with pytest.raises(RuntimeError, match="2 consecutive turns"):
         policy.act(_observation())
+    assert policy._motion is not None and not policy._motion.has_actions()
     transcript = policy.transcript()
     assert transcript is not None and "next turn" in transcript[-1]["content"]
 
@@ -445,7 +443,6 @@ def test_clean_perception_turn_resets_consecutive_failure_counter() -> None:
     )
     policy = _bound_policy(script, max_code_failures=2)
 
-    policy.act(_observation())
     stopped = policy.act(_observation())
 
     assert stopped.actions[0].meta["stop_reason"] == "FINISH"

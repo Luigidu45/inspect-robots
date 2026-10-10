@@ -129,12 +129,22 @@ class CodeSandbox:
         stdout = io.StringIO()
         stderr = io.StringIO()
         raised = False
+        cursor = self._motion.cursor
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             try:
                 exec(code, self._namespace, self._namespace)
+                if self._motion.limit_exceeded:
+                    raise ValueError(
+                        "Motion queue limit exceeded, even though code caught the error"
+                    )
             except Exception:
                 raised = True
                 traceback.print_exc()
+                if cursor is not None:
+                    self._motion.begin_turn(cursor)
+                else:
+                    self._motion.reset()
+                print("All queued motions from failed code were discarded.", file=stderr)
         return ExecutionResult(stdout=stdout.getvalue(), stderr=stderr.getvalue(), raised=raised)
 
     def _require_observation(self) -> Observation:
