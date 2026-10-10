@@ -26,6 +26,25 @@ def _space() -> Box:
     )
 
 
+def test_full_configuration_moves_arm_and_continuous_gripper_together() -> None:
+    motion = MotionQueue(_space(), control_hz=30, max_speed_frac=0.1, gripper_index=2)
+    motion.begin_turn(np.array([0.0, 0.0, 0.2]))
+    motion.move_to_configuration(np.array([0.1, -0.2, 0.7]))
+    actions = motion.take_chunk().actions
+    np.testing.assert_allclose(actions[-1].data, [0.1, -0.2, 0.7])
+    assert actions[0].data[0] > 0 and actions[0].data[2] > 0.2
+    for previous, current in pairwise([Action(np.array([0.0, 0.0, 0.2])), *actions]):
+        assert np.all(np.abs(current.data - previous.data) <= [0.1, 0.2, 0.05])
+
+
+@pytest.mark.parametrize("value", [[0, 0], [0, float("nan"), 0]])
+def test_full_configuration_rejects_invalid_target(value: list[float]) -> None:
+    motion = MotionQueue(_space(), control_hz=30, max_speed_frac=0.1, gripper_index=2)
+    motion.begin_turn(np.zeros(3))
+    with pytest.raises(ValueError):
+        motion.move_to_configuration(np.array(value))
+
+
 def _declaring_space() -> Box:
     return Box(
         shape=(3,),

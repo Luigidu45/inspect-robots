@@ -90,6 +90,7 @@ class CodeSandbox:
             "plan_grasp": self._plan_grasp,
             "solve_ik": self._solve_ik,
             "move_to_joints": self._motion.move_to_joints,
+            "move_to_configuration": self._motion.move_to_configuration,
             "open_gripper": self._motion.open_gripper,
             "close_gripper": self._motion.close_gripper,
         }

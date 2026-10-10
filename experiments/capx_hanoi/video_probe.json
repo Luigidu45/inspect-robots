@@ -1,0 +1,167 @@
+[
+  {
+    "file": "videos/observation.images.front/chunk-000/file-000.mp4",
+    "codec": "h264",
+    "width": 224,
+    "height": 224,
+    "fps": 30.0,
+    "duration_s": 9100.6,
+    "declared_frames": 273018,
+    "first_frame_pts_s": 0.0,
+    "decoded_shape": [
+      224,
+      224,
+      3
+    ]
+  },
+  {
+    "file": "videos/observation.images.front/chunk-000/file-001.mp4",
+    "codec": "h264",
+    "width": 224,
+    "height": 224,
+    "fps": 30.0,
+    "duration_s": 9357.466666666667,
+    "declared_frames": 280724,
+    "first_frame_pts_s": 0.0,
+    "decoded_shape": [
+      224,
+      224,
+      3
+    ]
+  },
+  {
+    "file": "videos/observation.images.front/chunk-000/file-002.mp4",
+    "codec": "h264",
+    "width": 224,
+    "height": 224,
+    "fps": 30.0,
+    "duration_s": 9319.766666666666,
+    "declared_frames": 279593,
+    "first_frame_pts_s": 0.0,
+    "decoded_shape": [
+      224,
+      224,
+      3
+    ]
+  },
+  {
+    "file": "videos/observation.images.front/chunk-000/file-003.mp4",
+    "codec": "h264",
+    "width": 224,
+    "height": 224,
+    "fps": 30.0,
+    "duration_s": 3351.8,
+    "declared_frames": 100554,
+    "first_frame_pts_s": 0.0,
+    "decoded_shape": [
+      224,
+      224,
+      3
+    ]
+  },
+  {
+    "file": "videos/observation.images.side/chunk-000/file-000.mp4",
+    "codec": "h264",
+    "width": 224,
+    "height": 224,
+    "fps": 30.0,
+    "duration_s": 8922.233333333334,
+    "declared_frames": 267667,
+    "first_frame_pts_s": 0.0,
+    "decoded_shape": [
+      224,
+      224,
+      3
+    ]
+  },
+  {
+    "file": "videos/observation.images.side/chunk-000/file-001.mp4",
+    "codec": "h264",
+    "width": 224,
+    "height": 224,
+    "fps": 30.0,
+    "duration_s": 8992.5,
+    "declared_frames": 269775,
+    "first_frame_pts_s": 0.0,
+    "decoded_shape": [
+      224,
+      224,
+      3
+    ]
+  },
+  {
+    "file": "videos/observation.images.side/chunk-000/file-002.mp4",
+    "codec": "h264",
+    "width": 224,
+    "height": 224,
+    "fps": 30.0,
+    "duration_s": 8846.033333333333,
+    "declared_frames": 265381,
+    "first_frame_pts_s": 0.0,
+    "decoded_shape": [
+      224,
+      224,
+      3
+    ]
+  },
+  {
+    "file": "videos/observation.images.side/chunk-000/file-003.mp4",
+    "codec": "h264",
+    "width": 224,
+    "height": 224,
+    "fps": 30.0,
+    "duration_s": 4368.866666666667,
+    "declared_frames": 131066,
+    "first_frame_pts_s": 0.0,
+    "decoded_shape": [
+      224,
+      224,
+      3
+    ]
+  },
+  {
+    "file": "videos/observation.images.wrist/chunk-000/file-000.mp4",
+    "codec": "h264",
+    "width": 224,
+    "height": 224,
+    "fps": 30.0,
+    "duration_s": 10917.5,
+    "declared_frames": 327525,
+    "first_frame_pts_s": 0.0,
+    "decoded_shape": [
+      224,
+      224,
+      3
+    ]
+  },
+  {
+    "file": "videos/observation.images.wrist/chunk-000/file-001.mp4",
+    "codec": "h264",
+    "width": 224,
+    "height": 224,
+    "fps": 30.0,
+    "duration_s": 11086.466666666667,
+    "declared_frames": 332594,
+    "first_frame_pts_s": 0.0,
+    "decoded_shape": [
+      224,
+      224,
+      3
+    ]
+  },
+  {
+    "file": "videos/observation.images.wrist/chunk-000/file-002.mp4",
+    "codec": "h264",
+    "width": 224,
+    "height": 224,
+    "fps": 30.0,
+    "duration_s": 9125.666666666666,
+    "declared_frames": 273770,
+    "first_frame_pts_s": 0.0,
+    "decoded_shape": [
+      224,
+      224,
+      3
+    ]
+  }
+]

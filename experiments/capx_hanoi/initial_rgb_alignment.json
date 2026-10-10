@@ -1,0 +1,83 @@
+[
+  {
+    "episode": 0,
+    "camera": "front",
+    "expected_timestamp_s": 0.0,
+    "decoded_timestamp_s": 0.0,
+    "timestamp_error_s": 0.0,
+    "pixel_mae_0_255": 1.5316419536564625,
+    "psnr_db": 39.514957744742965
+  },
+  {
+    "episode": 0,
+    "camera": "side",
+    "expected_timestamp_s": 0.0,
+    "decoded_timestamp_s": 0.0,
+    "timestamp_error_s": 0.0,
+    "pixel_mae_0_255": 1.5891727784863945,
+    "psnr_db": 39.60521097927027
+  },
+  {
+    "episode": 0,
+    "camera": "wrist",
+    "expected_timestamp_s": 0.0,
+    "decoded_timestamp_s": 0.0,
+    "timestamp_error_s": 0.0,
+    "pixel_mae_0_255": 1.0223347151360545,
+    "psnr_db": 39.54104683474702
+  },
+  {
+    "episode": 112,
+    "camera": "front",
+    "expected_timestamp_s": 6204.666666666668,
+    "decoded_timestamp_s": 6204.666666666667,
+    "timestamp_error_s": 9.094947017729282e-13,
+    "pixel_mae_0_255": 1.551412361819728,
+    "psnr_db": 39.28678923895751
+  },
+  {
+    "episode": 112,
+    "camera": "side",
+    "expected_timestamp_s": 6383.033333333335,
+    "decoded_timestamp_s": 6383.033333333334,
+    "timestamp_error_s": 9.094947017729282e-13,
+    "pixel_mae_0_255": 1.5532990539965987,
+    "psnr_db": 39.494735850486144
+  },
+  {
+    "episode": 112,
+    "camera": "wrist",
+    "expected_timestamp_s": 4387.7666666666655,
+    "decoded_timestamp_s": 4387.766666666666,
+    "timestamp_error_s": 9.094947017729282e-13,
+    "pixel_mae_0_255": 0.8752790178571429,
+    "psnr_db": 40.442512826830466
+  },
+  {
+    "episode": 224,
+    "camera": "front",
+    "expected_timestamp_s": 3243.6333333333337,
+    "decoded_timestamp_s": 3243.633333333333,
+    "timestamp_error_s": 4.547473508864641e-13,
+    "pixel_mae_0_255": 1.5735677083333333,
+    "psnr_db": 39.443008298807534
+  },
+  {
+    "episode": 224,
+    "camera": "side",
+    "expected_timestamp_s": 4260.7,
+    "decoded_timestamp_s": 4260.7,
+    "timestamp_error_s": 0.0,
+    "pixel_mae_0_255": 1.5311769238945578,
+    "psnr_db": 39.946594965503955
+  },
+  {
+    "episode": 224,
+    "camera": "wrist",
+    "expected_timestamp_s": 9017.5,
+    "decoded_timestamp_s": 9017.5,
+    "timestamp_error_s": 0.0,
+    "pixel_mae_0_255": 0.6720012223639455,
+    "psnr_db": 43.67083500993269
+  }
+]

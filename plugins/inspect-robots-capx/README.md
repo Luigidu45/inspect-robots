@@ -121,6 +121,8 @@ The helpers expose the current observation as `obs` and provide:
 - `plan_grasp(mask)` for camera-frame grasp poses and scores
 - `solve_ik(position, quaternion_wxyz)` for arm joints
 - `move_to_joints(joints)` for a speed-limited joint target
+- `move_to_configuration(configuration)` for a synchronized full target,
+  including a fractional gripper opening in its declared action dimension
 - `open_gripper()` and `close_gripper()` for speed-limited gripper ramps
 
 Motion helpers queue full joint targets. The complete queue becomes one open

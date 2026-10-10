@@ -142,6 +142,17 @@ class MotionQueue:
         target[list(self._arm_indices)] = arm
         self._queue_target(target)
 
+    def move_to_configuration(self, configuration: npt.NDArray[Any]) -> None:
+        """Queue a synchronized full target, including continuous gripper opening."""
+        target = np.asarray(configuration, dtype=np.float64)
+        if target.shape != (self._dim,):
+            raise ValueError(
+                f"move_to_configuration expects shape ({self._dim},), got {target.shape}"
+            )
+        if not bool(np.all(np.isfinite(target))):
+            raise ValueError("move_to_configuration received a non-finite target")
+        self._queue_target(target)
+
     def open_gripper(self) -> None:
         """Queue a speed-limited ramp to the configured open box bound."""
         self._queue_gripper(self.gripper_open_value)

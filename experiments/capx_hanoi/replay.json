@@ -1,0 +1,67 @@
+[
+  {
+    "episode": 0,
+    "seed": 3685993406,
+    "recorded_length": 3058,
+    "executed_steps": 3058,
+    "success": true,
+    "failure": false,
+    "healthy": true,
+    "terminated": true,
+    "truncated": false,
+    "max_state_error": 0.0012547075748443604,
+    "state_rmse": 3.6880150448950545e-05
+  },
+  {
+    "episode": 56,
+    "seed": 662960536,
+    "recorded_length": 4408,
+    "executed_steps": 4408,
+    "success": true,
+    "failure": false,
+    "healthy": true,
+    "terminated": true,
+    "truncated": false,
+    "max_state_error": 0.0012649893760681152,
+    "state_rmse": 2.1511860698177387e-05
+  },
+  {
+    "episode": 112,
+    "seed": 3590437643,
+    "recorded_length": 2856,
+    "executed_steps": 2856,
+    "success": true,
+    "failure": false,
+    "healthy": true,
+    "terminated": true,
+    "truncated": false,
+    "max_state_error": 0.002040296792984009,
+    "state_rmse": 4.4996567527448465e-05
+  },
+  {
+    "episode": 168,
+    "seed": 3253765560,
+    "recorded_length": 3273,
+    "executed_steps": 3273,
+    "success": true,
+    "failure": false,
+    "healthy": true,
+    "terminated": true,
+    "truncated": false,
+    "max_state_error": 0.0011440813541412354,
+    "state_rmse": 3.0152923597339422e-05
+  },
+  {
+    "episode": 224,
+    "seed": 830240233,
+    "recorded_length": 3245,
+    "executed_steps": 3245,
+    "success": true,
+    "failure": false,
+    "healthy": true,
+    "terminated": true,
+    "truncated": false,
+    "max_state_error": 0.00021833181381225586,
+    "state_rmse": 6.246206953049668e-06
+  }
+]

@@ -1,0 +1,152 @@
+{
+  "experiment_id": "capx-hanoi-triple-task2-rgb-proprio-30hz-v1",
+  "date": "2026-10-09",
+  "status": "frozen experimental protocol; trained model and adapter are later phases",
+  "dataset": {
+    "repo_id": "NONHUMAN-RESEARCH/ocbench-hanoi-triple-task2",
+    "revision": "c5f40db6f68a71147bef8224273dfeeb9d06bd81",
+    "episodes": 225,
+    "frames": 933889,
+    "split_manifest": "split_manifest.json",
+    "provenance": "episode_provenance.json",
+    "provenance_kind": "reconstructed candidates: root seed 0, initial proprioception matched for all episodes; sampled full replay and RGB checks"
+  },
+  "source": {
+    "generator_root": "/home/luigidu/ocbench_leonardo/ocbench",
+    "generator_commit": "95e3d4e16756f864b58e32a6a661286288ed3be8",
+    "generator_script_sha256": "e9bb3da0e21b61e26e21f083abf57c66a2ac3dc123d54b18342ad2808355c254",
+    "reference_root": "/home/luigidu/murobotics_ws/ocbench",
+    "reference_commit": "e2cd2f72110b66bd65afab1b855d81ebc73aeacc",
+    "matching_python_and_xml_files": 89,
+    "versions": {
+      "ocbench": "1.0.1",
+      "numpy": "2.2.6",
+      "mujoco": "3.15.0",
+      "dm-control": "1.0.48",
+      "gymnasium": "1.4.0",
+      "lerobot": "0.6.1",
+      "pyarrow": "26.0.0",
+      "av": "15.1.0"
+    }
+  },
+  "environment": {
+    "generation_env_id": "hanoi-cpu-triple-task2-v0",
+    "visual_reference_env_id": "visual-hanoi-cpu-triple-task2-v0",
+    "backend": "CPU MuJoCo",
+    "lite": false,
+    "control_hz": 30,
+    "control_timestep_s": 0.03333333333333333,
+    "physics_substeps": 20,
+    "physics_timestep_s": 0.0016666666666666668,
+    "max_steps": 7000,
+    "max_simulated_seconds": 233.33333333333334,
+    "action_delta_scale": 1.0,
+    "normalized_delta_scale": [
+      0.18,
+      0.18,
+      0.18,
+      0.36,
+      0.36,
+      0.36,
+      0.12
+    ],
+    "registered_defaults_are_different": {
+      "control_hz": 50,
+      "physics_timestep_s": 0.002,
+      "max_simulated_seconds": 140
+    }
+  },
+  "policy_observation": {
+    "modality": "RGB + proprioception; not official pixel-only protocol",
+    "rgb": {
+      "front": "front",
+      "side": "side",
+      "wrist": "ur5e/wrist"
+    },
+    "rgb_shape": [
+      224,
+      224,
+      3
+    ],
+    "joint_state_shape": [
+      7
+    ],
+    "arm_units": "radians",
+    "gripper_units": "normalized opening [0,1], 0 closed and 1 open",
+    "forbidden_policy_inputs": [
+      "object poses",
+      "peg poses",
+      "oracle state",
+      "success flag",
+      "reward",
+      "future observations or actions"
+    ]
+  },
+  "actions": {
+    "representation": "absolute actuator targets: six arm positions and normalized gripper opening",
+    "runtime_conversion": "clip((target-current)/normalized_delta_scale, -1, 1) before env.step",
+    "arm_limits": "MuJoCo actuator_ctrlrange; never dataset extrema",
+    "gripper_limits": [
+      0,
+      1
+    ],
+    "capx_interpolation": "must be validated separately during adapter integration"
+  },
+  "task": {
+    "instruction": "Solve the randomized three-disk Tower of Hanoi.",
+    "initial_peg": 1,
+    "valid_goal_pegs": [
+      0,
+      2
+    ],
+    "success": "OCBench success AND healthy AND NOT failure; complete legal tower on either outer peg",
+    "finish_is_not_success": true
+  },
+  "evaluation": {
+    "scene_manifest": "evaluation_scenes.json",
+    "validation_episodes": 50,
+    "test_episodes": 100,
+    "attempts_per_scene": 1,
+    "filter_unsuccessful_resets": false,
+    "same_scenes_for_base_and_finetuned_model": true,
+    "primary_metric": "successful scheduled test scenes / 100, with policy execution errors counted as failed attempts",
+    "also_report": [
+      "completed scenes",
+      "execution errors",
+      "truncations",
+      "control steps",
+      "LLM calls",
+      "inference wall time"
+    ],
+    "reconstructed_dataset_test_episodes": "23 offline held-out demonstrations; distinct from 100 fresh simulator test scenes",
+    "training_seed_candidates": [
+      0,
+      1,
+      2
+    ],
+    "adapter_reset_seed_rule": "Use the scene manifest reset seed exactly; record the framework trial seed separately and verify the initial world hash before executing actions."
+  },
+  "phase1_scope": {
+    "numeric_rows": "all 933889",
+    "seed_candidates": "all 225",
+    "full_replay_episode_ids": [
+      0,
+      56,
+      112,
+      168,
+      224
+    ],
+    "video_headers_and_first_frame": "all 11 MP4 files",
+    "rgb_reset_comparison_episode_ids": [
+      0,
+      112,
+      224
+    ],
+    "not_executed": [
+      "full replay of all 225 episodes",
+      "full decoding of all video frames",
+      "trained-policy evaluation",
+      "CaP-X chunk interpolation replay"
+    ]
+  }
+}

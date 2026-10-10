@@ -1,0 +1,86 @@
+{
+  "phase": 2,
+  "protocol_id": "capx-hanoi-triple-task2-rgb-proprio-30hz-v1",
+  "dataset_revision": "c5f40db6f68a71147bef8224273dfeeb9d06bd81",
+  "validation_kind": "scripted model responses through actual CapxPolicy, Python helpers, guardrails and MuJoCo; not LLM reasoning or generalization",
+  "recorded_episodes": [
+    0,
+    56,
+    112,
+    168,
+    224
+  ],
+  "successful_episodes": 5,
+  "scheduled_episodes": 5,
+  "recorded_steps": 16840,
+  "executed_steps": 16940,
+  "scripted_model_calls": 265,
+  "guardrail_modifications": 0,
+  "chunk_size": 64,
+  "evidence": "movement_validation_chunk64.json",
+  "single_chunk_evidence": "movement_validation.json",
+  "initial_world_hash_checked_each_episode": true,
+  "rgb": "all three cameras fresh each policy turn and final; cached within chunks in replay only",
+  "source_sha256": {
+    "plugins/inspect-robots-ocbench/src/inspect_robots_ocbench/embodiment.py": "73b162cb267568713c590727f572e863b2a7a664c386cc0c34be449985355486",
+    "plugins/inspect-robots-ocbench/src/inspect_robots_ocbench/task.py": "b254020ee2d741eca6296570b335bd38e230f4e24b0134023a217ba2b6ee49db",
+    "plugins/inspect-robots-capx/src/inspect_robots_capx/_motion.py": "f7aa2a00f0ef98316d64abd8d4504135f9c48b9f84e201d85b9e55aa6d1c5913",
+    "plugins/inspect-robots-capx/src/inspect_robots_capx/_sandbox.py": "003511552c60b0c65e1f6a28c03451daa4447065c2d38fca8740d8aac9189b88",
+    "plugins/inspect-robots-capx/src/inspect_robots_capx/policy.py": "3852d6b295cafdede80dc0ec53bf468a9b46bfc5ebf8a3e05c09ac396801e8f2",
+    "experiments/capx_hanoi/validate_movements.py": "d0e6bac2bc4fdabb856408798697f98e168b06014e4129f3105df004ae0bae08"
+  },
+  "pending": [
+    "exact LLM endpoint and model identifier",
+    "real-model baseline on new validation scenes",
+    "Python training labels and Modal training pipeline",
+    "trained-policy evaluation on reserved new test scenes"
+  ],
+  "isolated_runtime": {
+    "python": "3.12.14",
+    "path": "/tmp/capx-hanoi-env",
+    "packages": {
+      "ocbench": "1.0.1",
+      "numpy": "2.2.6",
+      "mujoco": "3.15.0",
+      "dm-control": "1.0.48",
+      "gymnasium": "1.4.0",
+      "scipy": "1.18.1",
+      "inspect-robots-agent": "0.29.0",
+      "inspect-robots-capx": "0.4.0",
+      "inspect-robots-ocbench": "0.1.0"
+    },
+    "evidence": "isolated_runtime_validation.json",
+    "new_validation_scene_smoke": {
+      "scene_id": "validation-000",
+      "reset_seed": 2235863025,
+      "framework_trial_seed": 123,
+      "initial_world_sha256": "6647d2d5049898423e00a432b5ec32a2e6ecea1567aae126ee78012e1d9942bb",
+      "rgb_shapes": {
+        "front": [
+          224,
+          224,
+          3
+        ],
+        "side": [
+          224,
+          224,
+          3
+        ],
+        "wrist": [
+          224,
+          224,
+          3
+        ]
+      }
+    }
+  },
+  "checks": {
+    "plugin_and_runner_tests_passed": 93,
+    "core_tests_passed": 2089,
+    "core_tests_skipped": 6,
+    "core_coverage_percent": 100,
+    "ruff_check": "passed",
+    "ruff_format_check": "passed",
+    "mypy_core_and_plugins": "passed"
+  }
+}

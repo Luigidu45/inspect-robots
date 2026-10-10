@@ -76,6 +76,9 @@ solve_ik(position: np.ndarray, quaternion_wxyz: np.ndarray) -> np.ndarray
     Return the arm-joint vector expected by move_to_joints.
 move_to_joints(joints: np.ndarray) -> None
     Queue a speed-limited arm move while holding the gripper.
+move_to_configuration(configuration: np.ndarray) -> None
+    Queue a synchronized speed-limited full action vector, including the
+    gripper in its declared dimension. Use fractional openings when needed.
 open_gripper() / close_gripper() -> None
     Queue a speed-limited gripper ramp while holding the arm.
 

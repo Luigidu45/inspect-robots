@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "inspect-robots-ocbench"
+version = "0.1.0"
+description = "Dataset-matched OCBench Hanoi evaluation for Inspect Robots."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["inspect-robots>=0.30", "numpy>=1.24"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov>=5", "mypy>=1.11", "ruff>=0.6"]
+
+[project.entry-points."inspect_robots.embodiments"]
+ocbench = "inspect_robots_ocbench.embodiment:ocbench_embodiment"
+
+[project.entry-points."inspect_robots.tasks"]
+ocbench-hanoi = "inspect_robots_ocbench.task:hanoi_task"
+
+[tool.uv.sources]
+inspect-robots = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/inspect_robots_ocbench"]
+
+[tool.ruff]
+extend = "../../pyproject.toml"
+
+[tool.ruff.lint.isort]
+known-first-party = ["inspect_robots", "inspect_robots_ocbench"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D1"]
+
+[tool.mypy]
+strict = true

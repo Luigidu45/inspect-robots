@@ -1,0 +1,36 @@
+{
+  "status": "passed for documented phase-1 scope",
+  "date": "2026-10-09",
+  "numeric_rows_checked": 933889,
+  "episodes_checked": 225,
+  "reconstructed_seed_candidates": 225,
+  "actuator_conversion_cases": 103,
+  "full_replays": 5,
+  "full_replay_successes": 5,
+  "full_replay_control_steps": 16840,
+  "video_files_probed": 11,
+  "initial_rgb_frames_compared": 9,
+  "audit_cli_smoke_test": {
+    "exit_code": 0,
+    "full_replay_episode_ids": [
+      0
+    ],
+    "probe_videos": true
+  },
+  "repository_checks": {
+    "ruff_check": "passed",
+    "ruff_format": "passed",
+    "mypy": "passed",
+    "pytest_passed": 2089,
+    "pytest_skipped": 6,
+    "core_coverage_percent": 100,
+    "socket_permission_required_for_http_tests": true
+  },
+  "validator_sha256": "d9211d3545da3eec312de3eea955d37f075147d6955f0ea02e42947ac264a0b9",
+  "limits": [
+    "Only five of 225 episodes were fully replayed.",
+    "Video headers, first frames and nine initial reset frames were checked; complete videos were not decoded.",
+    "Seed provenance is reconstructed, not an original generation manifest.",
+    "CaP-X chunk execution and model training belong to later phases."
+  ]
+}
