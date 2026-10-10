@@ -282,8 +282,7 @@ class AgentPolicyConfig(PolicyConfig):
     speed: str | None = None
     #: Requested Responses processing tier; None preserves the project default.
     service_tier: str | None = None
-    #: Effective per-response cap on ``wire=messages``; ``None`` on the other
-    #: wires, where nothing constrained the output.
+    #: Effective output cap for Messages or Responses, including reasoning.
     max_output_tokens: int | None = None
     max_llm_calls: int = 100
     #: Resolved effort level; ``None`` means the field is omitted and the
@@ -303,6 +302,7 @@ class AgentPolicyConfig(PolicyConfig):
     pre_check: str | None = None
     max_retries: int = 3
     backoff_s: float = 1.0
+    max_cost_usd: float | None = None
 
 
 @dataclass(frozen=True, eq=False)
@@ -355,6 +355,7 @@ class LLMAgentPolicy(PolicyBase):
         service_tier: str | None = None,
         max_retries: int = 3,
         backoff_s: float = 1.0,
+        max_cost_usd: float | None = None,
     ) -> None:
         # Reject non-strings with a guided ConfigError to prevent unquoted CLI
         # values (e.g. -P model=42) from causing downstream errors or silent bypasses.
@@ -512,9 +513,9 @@ class LLMAgentPolicy(PolicyBase):
                     f"speed is only supported on wire='messages', got wire={wire!r}.\n"
                     "fix: pass -P wire=messages, or drop -P speed="
                 )
-            if max_output_tokens is not None:
+            if max_output_tokens is not None and wire != "responses":
                 raise ConfigError(
-                    "max_output_tokens is only supported on wire='messages', got "
+                    "max_output_tokens is only supported on wire='messages' or 'responses', got "
                     f"wire={wire!r}.\nfix: pass -P wire=messages, or drop "
                     "-P max_output_tokens="
                 )
@@ -717,8 +718,12 @@ class LLMAgentPolicy(PolicyBase):
         resolved_max_output_tokens = (
             (max_output_tokens if max_output_tokens is not None else _DEFAULT_MAX_OUTPUT_TOKENS)
             if wire == "messages"
+            else max_output_tokens
+            if wire == "responses"
             else None
         )
+        if max_cost_usd is not None and wire != "responses":
+            raise ConfigError("max_cost_usd is supported only on wire='responses'")
         self._capture = WireCapture() if wire_capture else None
         self._client: (
             ChatClient | ResponsesClient | AnthropicClient | GeminiLiveClient | InteractionsClient
@@ -737,6 +742,8 @@ class LLMAgentPolicy(PolicyBase):
         elif wire == "responses":
             self._client = ResponsesClient(
                 provider,
+                max_output_tokens=resolved_max_output_tokens,
+                max_cost_usd=max_cost_usd,
                 service_tier=service_tier,
                 max_retries=max_retries,
                 backoff_s=resolved_backoff_s,
@@ -790,6 +797,7 @@ class LLMAgentPolicy(PolicyBase):
             speed=speed,
             service_tier=service_tier,
             max_output_tokens=resolved_max_output_tokens,
+            max_cost_usd=max_cost_usd,
             max_llm_calls=max_llm_calls,
             max_retries=max_retries,
             backoff_s=resolved_backoff_s,
@@ -891,6 +899,8 @@ class LLMAgentPolicy(PolicyBase):
         self._delta_cursor = 0
         self._calls_used = 0
         self._usage_totals.clear()
+        if isinstance(self._client, ResponsesClient):
+            self._client.usage_ledger.reset()
         self._pending = None
         self._revealed.clear()
         self._reference_images_sent = False
@@ -937,6 +947,11 @@ class LLMAgentPolicy(PolicyBase):
             record.metadata["llm_usage"] = {
                 "llm_calls": self._calls_used,
                 **{key: value for key, value in self._usage_totals.items() if key != "llm_calls"},
+            }
+        if isinstance(self._client, ResponsesClient):
+            record.metadata["llm_usage"] = {
+                "llm_calls": self._calls_used,
+                **self._client.usage_ledger.report(),
             }
 
     def transcript(self) -> list[dict[str, Any]] | None:

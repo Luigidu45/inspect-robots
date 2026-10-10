@@ -1,0 +1,1 @@
+**Agent plugin:** record Responses token usage, cache reads and writes, reasoning and qualified Astra cost estimates. Add optional output and per-trial estimated-spend limits, preserve usage for failed or truncated responses, and stop retrying exhausted credits or enforced spend limits.

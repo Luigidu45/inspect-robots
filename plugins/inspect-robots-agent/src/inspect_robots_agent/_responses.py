@@ -13,6 +13,7 @@ import httpx
 from inspect_robots_agent._llm import AssistantMessage, Provider, ToolCall, _retry_delay
 
 from ._capture import WireCapture
+from ._usage import UsageLedger, normalized_usage
 
 
 class ResponsesClient:
@@ -34,7 +35,17 @@ class ResponsesClient:
         backoff_s: float = 1.0,
         transport: httpx.BaseTransport | None = None,
         capture: WireCapture | None = None,
+        max_output_tokens: int | None = None,
+        max_cost_usd: float | None = None,
     ):
+        if max_output_tokens is not None and (
+            isinstance(max_output_tokens, bool)
+            or not isinstance(max_output_tokens, int)
+            or max_output_tokens < 1
+        ):
+            raise ValueError("max_output_tokens must be an int >= 1")
+        self._max_output_tokens = max_output_tokens
+        self.usage_ledger = UsageLedger(provider.model, max_cost_usd)
         self._provider = provider
         self._service_tier = service_tier
         # Earlier and unknown models may reject the explicit-breakpoint fields.
@@ -89,14 +100,19 @@ class ResponsesClient:
         if self._service_tier is not None:
             body["service_tier"] = self._service_tier
         pending_prefixes = self._prepare_cache_reuse(body) if self._cache_anchors else set()
+        if self._max_output_tokens is not None:
+            body["max_output_tokens"] = self._max_output_tokens
 
         last_error = "unknown error"
         for attempt in range(self._max_retries):
+            self.usage_ledger.check_budget()
+            request_started = time.monotonic()
             retry_response: httpx.Response | None = None
             t_start = time.time() if self._capture is not None else 0.0
             try:
                 response = self._http.post("/responses", json=body)
             except httpx.TransportError as exc:
+                self.usage_ledger.record(None, None, time.monotonic() - request_started)
                 if self._capture is not None:
                     self._capture.record(
                         attempt=attempt,
@@ -110,6 +126,13 @@ class ResponsesClient:
                     )
                 last_error = str(exc)
             else:
+                try:
+                    accounting_payload = response.json()
+                except ValueError:
+                    accounting_payload = None
+                self.usage_ledger.record(
+                    response.status_code, accounting_payload, time.monotonic() - request_started
+                )
                 retry_response = response
                 if self._capture is not None:
                     self._capture.record(
@@ -132,6 +155,24 @@ class ResponsesClient:
                             self._raw_items_by_call_id[str(item["call_id"])] = output
                     return message
                 last_error = f"HTTP {response.status_code}: {response.text[:500]}"
+                error = (
+                    accounting_payload.get("error")
+                    if isinstance(accounting_payload, dict)
+                    else None
+                )
+                if isinstance(error, dict) and (
+                    error.get("type") == "insufficient_quota"
+                    or error.get("code")
+                    in {
+                        "credit_balance_exhausted",
+                        "organization_spend_limit_exceeded",
+                        "project_spend_limit_exceeded",
+                        "organization_usage_limit_exceeded",
+                    }
+                ):
+                    raise RuntimeError(
+                        f"LLM billing or quota rejected request; no retry — {last_error}"
+                    )
                 if response.status_code not in (429,) and response.status_code < 500:
                     raise RuntimeError(f"LLM request rejected — {last_error}")
             if attempt + 1 < self._max_retries:
@@ -325,6 +366,15 @@ def _parse_response(payload: dict[str, Any]) -> tuple[AssistantMessage, list[dic
         error = payload.get("error")
         message = error.get("message") if isinstance(error, dict) else None
         raise RuntimeError(f"LLM response failed — {message or 'unknown error'}")
+    details = payload.get("incomplete_details")
+    if (
+        payload.get("status") == "incomplete"
+        and isinstance(details, dict)
+        and details.get("reason") == "max_output_tokens"
+    ):
+        raise RuntimeError(
+            "LLM output exceeded max_output_tokens; partial code or tool calls were not executed"
+        )
 
     output = cast(list[dict[str, Any]], payload["output"])
     texts: list[str] = []
@@ -343,6 +393,10 @@ def _parse_response(payload: dict[str, Any]) -> tuple[AssistantMessage, list[dic
                 )
             )
     return (
-        AssistantMessage(content="".join(texts) if texts else None, tool_calls=tuple(calls)),
+        AssistantMessage(
+            content="".join(texts) if texts else None,
+            tool_calls=tuple(calls),
+            usage=normalized_usage(payload),
+        ),
         output,
     )

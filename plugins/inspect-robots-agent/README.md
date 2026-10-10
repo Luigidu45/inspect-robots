@@ -278,15 +278,30 @@ be distinguishable, encode it in a named factory's qualname, for example
 > on real hardware** unless you fully trust the policy and the rig.
 
 Configuration knobs (all `-P key=value`): `model`, `base_url`, `api_key_env`,
-`wire`, `speed`, `service_tier`, `max_output_tokens`, `max_llm_calls` (default `100`),
+`wire`, `speed`, `service_tier`, `max_output_tokens`, `max_cost_usd`, `max_llm_calls` (default `100`),
 `max_retries` (default `3`, counting total attempts), `backoff_s` (default `1.0`),
 `temperature`, `effort`, `max_speed_frac`, `transcript_echo`, `images`
 (default `always`; use `on_demand` for model-requested frames; `inspect-robots setup` suggests `on_demand`),
 `image_horizon`, `depth` (default `render`; use `off` to omit depth
 renders), and `prior_learnings`.
-`speed` and `max_output_tokens` apply to `-P wire=messages` only, and passing
-either on another wire is an error. `speed=fast` is meaningful only for Claude
+`speed` applies to `-P wire=messages` only. `max_output_tokens` is also supported
+on `wire=responses`, where it caps output including reasoning. Using `speed`
+outside Messages, or the output cap outside Messages/Responses, is an error.
+`speed=fast` is meaningful only for Claude
 on Anthropic's API; Tinker accepts and silently ignores it.
+
+Responses trials retain input/output tokens, cache reads and writes, reasoning
+tokens and HTTP attempts in `trial_metadata.llm_usage`. Reasoning is included
+in output tokens and is not billed twice. Qualified GPT-6 Astra cost estimates
+record their pricing date and source; unknown pricing or missing usage yields
+an unknown cost rather than zero. Failed or token-truncated responses retain
+their usage, and token-truncated output is not executed.
+`max_cost_usd` is an optional per-trial Responses guard for the known Astra
+rates. It checks recorded spend before another request; one request may exceed
+the threshold. It does not query an account balance or replace a Platform hard
+spend limit. Credit exhaustion and enforced spend-limit errors fail without
+retries; transient rate limits still retry. These changes do not alter the
+agent's motion tools or strategy prompt.
 
 Transient LLM failures use exponential backoff: `backoff_s * 2**attempt`.
 HTTP wires use a valid `Retry-After` header from the provider when one is
