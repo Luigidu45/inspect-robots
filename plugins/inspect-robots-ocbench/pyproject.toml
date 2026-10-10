@@ -19,6 +19,7 @@ ocbench = "inspect_robots_ocbench.embodiment:ocbench_embodiment"
 
 [project.entry-points."inspect_robots.tasks"]
 ocbench-hanoi = "inspect_robots_ocbench.task:hanoi_task"
+ocbench-hanoi-reset = "inspect_robots_ocbench.task:hanoi_reset_task"
 
 [tool.uv.sources]
 inspect-robots = { workspace = true }

@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -55,6 +56,7 @@ class _Unset:
 _UNSET: Final = _Unset()
 _EXECUTION_REPORT_CHAR_LIMIT = 16_000
 _REPORT_TRUNCATION_MARKER = "[execution report truncated; tail follows]\n"
+_REFERENCE_IMAGES_KEY = "reference_images"
 
 # Duplicated in inspect_robots_agent/policy.py; keep both limits in sync.
 _PRIOR_LEARNINGS_TEXT_LIMIT = 32 * 1024
@@ -312,6 +314,7 @@ class CapxPolicy(PolicyBase):
         self._delta_cursor = 0
         self._calls_used = 0
         self._consecutive_failures = 0
+        self._reference_images_sent = False
         self._closed = False
         atexit.register(self.close)
 
@@ -438,6 +441,7 @@ class CapxPolicy(PolicyBase):
         self._delta_cursor = 0
         self._calls_used = 0
         self._consecutive_failures = 0
+        self._reference_images_sent = False
         if self._sandbox is not None:
             self._sandbox.reset()
         self._servers.pyroki.reset()
@@ -468,9 +472,15 @@ class CapxPolicy(PolicyBase):
         self._messages.append(
             {
                 "role": "user",
-                "content": _observation_content(observation, self._state_labels),
+                "content": _observation_content(
+                    observation,
+                    self._state_labels,
+                    include_reference=not self._reference_images_sent,
+                ),
             }
         )
+        if _REFERENCE_IMAGES_KEY in observation.extra:
+            self._reference_images_sent = True
         llm_latency = 0.0
         while True:
             if self._calls_used >= self._max_llm_calls:
@@ -600,13 +610,38 @@ def _state_lines(
 def _observation_content(
     observation: Observation,
     state_labels: tuple[str, tuple[str, ...]] | None,
+    *,
+    include_reference: bool = True,
 ) -> list[dict[str, Any]]:
-    """Encode fresh state text and camera PNGs without repeating execution feedback."""
+    """Encode fresh state and cameras, with goal images once when provided."""
+    parts: list[dict[str, Any]] = []
+    if include_reference and _REFERENCE_IMAGES_KEY in observation.extra:
+        references = observation.extra[_REFERENCE_IMAGES_KEY]
+        if not isinstance(references, Mapping) or not references:
+            raise ValueError("observation.extra['reference_images'] must be a non-empty mapping")
+        parts.append(
+            {
+                "type": "text",
+                "text": (
+                    "Reference goal images. These show the desired object arrangement; "
+                    "the robot arm pose does not need to match."
+                ),
+            }
+        )
+        for name, image in references.items():
+            array = np.asarray(image)
+            if array.ndim != 3 or array.shape[2] != 3 or array.dtype != np.uint8:
+                raise ValueError(
+                    "observation.extra['reference_images'] values must be HxWx3 uint8 arrays"
+                )
+            parts.append({"type": "text", "text": f"reference camera {name!r}:"})
+            parts.append({"type": "image_url", "image_url": {"url": png_data_url(array)}})
+
     lines = ["Current observation."]
     if observation.instruction:
         lines.append(f"Instruction: {observation.instruction}")
     lines.extend(_state_lines(observation, state_labels))
-    parts: list[dict[str, Any]] = [{"type": "text", "text": "\n".join(lines)}]
+    parts.append({"type": "text", "text": "\n".join(lines)})
     for name, image in observation.images.items():
         parts.append({"type": "text", "text": f"camera {name!r}:"})
         parts.append({"type": "image_url", "image_url": {"url": png_data_url(image)}})

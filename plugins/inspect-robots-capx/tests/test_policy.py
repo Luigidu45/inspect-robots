@@ -106,12 +106,18 @@ def _info(
     )
 
 
-def _observation(*, image: bool = False) -> Observation:
+def _observation(*, image: bool = False, reference: bool = False) -> Observation:
     images = {"front": np.zeros((2, 2, 3), dtype=np.uint8)} if image else {}
+    extra = (
+        {"reference_images": {"front": np.full((2, 2, 3), 255, dtype=np.uint8)}}
+        if reference
+        else {}
+    )
     return Observation(
         images=images,
         state={"joint_pos": np.array([0.0, 0.0, 1.0])},
         instruction="pick the cube",
+        extra=extra,
     )
 
 
@@ -133,6 +139,45 @@ def _bound_policy(script: _ScriptedTransport, **kwargs: Any) -> CapxPolicy:
     policy.bind(_info())
     policy.reset(Scene(id="s0", instruction="pick the cube"))
     return policy
+
+
+def test_reference_images_are_labeled_and_sent_once_per_trial() -> None:
+    script = _ScriptedTransport(
+        [
+            _completion("move_to_configuration([0.1, 0.0, 1.0])"),
+            _completion("FINISH"),
+        ]
+    )
+    policy = _bound_policy(script)
+    observation = _observation(image=True, reference=True)
+
+    policy.act(observation)
+    policy.act(observation)
+
+    first = script.llm_requests[0]["messages"][-1]["content"]
+    second = script.llm_requests[1]["messages"][-1]["content"]
+    assert sum(part["type"] == "image_url" for part in first) == 2
+    assert sum(part["type"] == "image_url" for part in second) == 1
+    assert "Reference goal images" in json.dumps(first)
+    assert "reference camera 'front'" in json.dumps(first)
+    assert "Reference goal images" not in json.dumps(second)
+    policy.close()
+
+
+@pytest.mark.parametrize(
+    "references",
+    [{}, {"front": np.zeros((2, 2), dtype=np.uint8)}],
+)
+def test_reference_images_reject_invalid_payloads(references: dict[str, Any]) -> None:
+    policy = _bound_policy(_ScriptedTransport([]))
+    observation = Observation(
+        images={"front": np.zeros((2, 2, 3), dtype=np.uint8)},
+        state={"joint_pos": np.array([0.0, 0.0, 1.0])},
+        extra={"reference_images": references},
+    )
+    with pytest.raises(ValueError, match="reference_images"):
+        policy.act(observation)
+    policy.close()
 
 
 def test_prior_learnings_follow_embodiment_docs_and_record_provenance(

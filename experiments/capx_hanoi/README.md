@@ -1,8 +1,9 @@
 # Experimento: CaP-X en Hanoi con RGB y propiocepción
 
 La fase 1 valida el dataset y fija el protocolo. La fase 2 implementa el
-adaptador OCBench y comprueba la ejecución de movimientos mediante CaP-X.
-El entrenamiento y la evaluación de un LLM real siguen pendientes.
+adaptador OCBench y comprueba la ejecución de movimientos mediante CaP-X. La
+fase 3 implementa la evaluación del agente restaurando estados finales de las
+demostraciones. El entrenamiento de un modelo sigue fuera de este experimento.
 
 ## Dataset y fuentes:
 
@@ -304,10 +305,154 @@ El modelo debe aceptar imágenes y generar código. Cambiar `--wire` a
 usar validación para ajustar la política; reservar `--split test` para comparar
 el modelo base y el ajustado con las mismas 100 escenas.
 
-## Trabajo pendiente para el objetivo entrenado:
+## Fase 3: reset agentico desde episodios resueltos:
 
-La fase actual valida la ejecución. Todavía falta elegir un modelo y endpoint
-concretos, medir el baseline visual, construir ejemplos de entrenamiento
+[run_reset.py](run_reset.py) ejecuta el protocolo de reset sin una VLA. Para
+cada escena seleccionada de `split_manifest.json`:
+
+```text
+reset OCBench con la semilla reconstruida
+  -> capturar front, side y wrist como referencia privada del objetivo
+  -> reproducir todas las acciones del episodio hasta su Hanoi resuelto
+  -> reiniciar únicamente el contador de pasos del agente
+  -> entregar referencia + RGB actual + joint_pos a CaP-X
+  -> evaluar después de cada acción la torre en el poste inicial
+```
+
+La reproducción prepara el estado inicial de la evaluación. Sus acciones no
+llegan al LLM y sus pasos no se mezclan con `episode_length`. OCBench se crea
+con `terminate_at_success=False`, por lo que alcanzar el objetivo de la tarea
+original no reinicia el entorno. El criterio de reset usa el poste inicial del
+layout aleatorio, exige los tres discos en orden, la pinza liberada y cinco
+pasos de control consecutivos en esa condición. No exige que el brazo copie su
+pose de la imagen de referencia.
+
+El hash bitwise del mundo inicial se conserva en la provenance, junto con
+`initial_world_hash_matches`. En el reset es diagnóstico y no bloqueante:
+componentes internos float64 de MuJoCo e IK pueden variar entre runtimes aunque
+la propiocepción exportada y el layout coincidan. El gate bloqueante es más
+directo para este protocolo: reproducir todas las acciones debe mantenerse
+saludable y terminar en éxito oficial de OCBench. La task normal de Hanoi
+conserva su comprobación estricta del hash.
+
+[reset_setup_smoke.json](reset_setup_smoke.json) registra una comprobación con
+OCBench real del primer episodio de validación: el episodio 2 reprodujo sus
+4303 acciones, terminó resuelto y saludable, dejó el objetivo de reset aún
+pendiente y produjo las tres referencias visuales. Esta prueba no hizo ninguna
+petición a un LLM.
+
+La instrucción enviada al modelo es positiva y especifica el resultado:
+
+> Restore the three disks to the original middle-peg stack shown in the
+> reference images using an efficient sequence of safe moves. Place the largest
+> disk on the bottom, the medium disk in the middle, and the smallest disk on
+> top. Release the disks and leave the stack stable. The robot arm may finish
+> in any safe pose.
+
+Esto sigue el patrón de tareas de manipulación de describir directamente el
+estado objetivo. El veredicto no depende del texto ni de `FINISH`; lo calcula
+el simulador con estado privilegiado que nunca se incorpora a la observación.
+
+CaP-X envía las imágenes de referencia sólo en la primera llamada del trial,
+claramente separadas de las cámaras actuales. Después permanecen en el historial
+del modelo. Cada observación actual conserva las tres cámaras. Los logs guardan
+frames, acciones, transcripción, éxito y longitud del intento.
+
+### Preparar los datos:
+
+Sólo hacen falta `meta/**` y `data/**`, no los vídeos. Mantener la revisión
+fijada:
+
+```bash
+/tmp/capx-hanoi-env/bin/python - <<'PY'
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    repo_id="NONHUMAN-RESEARCH/ocbench-hanoi-triple-task2",
+    repo_type="dataset",
+    revision="c5f40db6f68a71147bef8224273dfeeb9d06bd81",
+    allow_patterns=["meta/**", "data/**"],
+    local_dir="/tmp/capx-hanoi-snapshot",
+)
+PY
+```
+
+El entorno de ejecución necesita `pyarrow` para seleccionar las acciones de los
+episodios. Si no está instalado:
+
+```bash
+uv pip install --python /tmp/capx-hanoi-env/bin/python pyarrow huggingface-hub
+```
+
+### Configurar la API y ejecutar:
+
+La clave se coloca en una variable de entorno. No se escribe en archivos del
+repositorio ni se pasa literalmente por CLI:
+
+```bash
+export CAPX_API_KEY='tu-clave-del-endpoint'
+export CAPX_BASE_URL='https://tu-endpoint.example/v1'
+export CAPX_MODEL='identificador-exacto-aceptado-por-el-endpoint'
+```
+
+Prueba mínima con un episodio de validación:
+
+```bash
+env -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
+  CAPX_API_KEY="$CAPX_API_KEY" \
+  /tmp/capx-hanoi-env/bin/python experiments/capx_hanoi/run_reset.py \
+  --dataset-root /tmp/capx-hanoi-snapshot \
+  --model "$CAPX_MODEL" --base-url "$CAPX_BASE_URL" \
+  --api-key-env CAPX_API_KEY --wire chat \
+  --split validation --num-scenes 1 \
+  --log-dir logs/capx-hanoi-reset-smoke
+```
+
+Usar `--wire responses` sólo si el endpoint implementa Responses API. El
+modelo debe admitir imágenes. `run_reset.py` no presupone que un nombre usado
+en una interfaz de chat sea también un identificador disponible en la API.
+
+Para OpenAI, la configuración concreta de GPT-6 Astra es:
+
+```bash
+export OPENAI_API_KEY='tu-clave-de-proyecto'
+export CAPX_BASE_URL='https://api.openai.com/v1'
+export CAPX_MODEL='gpt-6-astra'
+
+env -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
+  /tmp/capx-hanoi-env/bin/python experiments/capx_hanoi/run_reset.py \
+  --dataset-root /tmp/capx-hanoi-snapshot \
+  --model "$CAPX_MODEL" --base-url "$CAPX_BASE_URL" \
+  --api-key-env OPENAI_API_KEY --wire responses \
+  --split validation --num-scenes 1 \
+  --log-dir logs/capx-hanoi-reset-astra-smoke
+```
+
+La clave se crea y administra en la configuración del proyecto de OpenAI. El
+runner sólo lee el nombre indicado por `--api-key-env`; nunca persiste su valor.
+La [documentación oficial de autenticación](https://platform.openai.com/docs/api-reference/introduction)
+recomienda cargar claves desde variables de entorno, y la
+[ficha oficial de GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra)
+confirma el identificador `gpt-6-astra`, entrada visual y soporte de Responses.
+
+Las métricas principales son `success_rate_all_scheduled` y
+`mean_agent_steps_on_success`. Los errores permanecen en el denominador. El
+replay de preparación queda registrado como `setup_replay_steps` dentro de la
+provenance, separado de los pasos del agente.
+
+### Alcance del baseline:
+
+Este flujo queda listo para probar razonamiento visual y control joint-space.
+OCBench no proporciona depth ni extrínsecos en este protocolo, así que
+`plan_grasp` no tiene sus entradas. El modelo puede usar las imágenes, el estado
+articular y `move_to_configuration`, pero el éxito autónomo todavía debe medirse.
+Una primitive de grasp privilegiada cambiaría la pregunta experimental y no se
+incluye silenciosamente en este baseline.
+
+## Trabajo posterior para el objetivo entrenado:
+
+El reset ya tiene runner y evaluación. Todavía falta elegir un modelo y endpoint
+concretos, medir el baseline, construir ejemplos de entrenamiento
 `observación + instrucción -> Python` con los splits fijados, entrenar y
 comparar ambas políticas en las escenas nuevas. El LeRobot actual contiene
 acciones articulares; no contiene etiquetas Python ni conversaciones CaP-X.

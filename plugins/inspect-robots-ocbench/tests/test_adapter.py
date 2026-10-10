@@ -13,8 +13,18 @@ import pytest
 
 from inspect_robots.scene import Scene
 from inspect_robots.types import Action
-from inspect_robots_ocbench import OCBenchEmbodiment, hanoi_task
-from inspect_robots_ocbench.embodiment import DELTA_SCALE
+from inspect_robots_ocbench import (
+    RESET_INSTRUCTION,
+    OCBenchEmbodiment,
+    OCBenchHanoiResetEmbodiment,
+    hanoi_reset_task,
+    hanoi_task,
+)
+from inspect_robots_ocbench.embodiment import (
+    DELTA_SCALE,
+    REFERENCE_IMAGES_KEY,
+    RESET_STABILITY_STEPS,
+)
 
 
 class FakeEnv:
@@ -41,9 +51,17 @@ class FakeEnv:
         self.failure = False
         self.healthy = True
         self.closed = False
+        self.make_kwargs: dict[str, Any] = {}
+        self.reset_replay_behavior = False
+        self.restore_on_step = False
+        self.tower_on_initial_peg = True
+        self.step_count = 0
+        self.cur_task_info = {"init_peg": 1}
 
     def reset(self, seed: int) -> tuple[None, dict[str, Any]]:
         self.seed = seed
+        self.step_count = 0
+        self.tower_on_initial_peg = True
         return None, {"dynamics_info": np.zeros(12)}
 
     def render(self, camera: str) -> Any:
@@ -52,6 +70,13 @@ class FakeEnv:
 
     def step(self, action: Any) -> tuple[None, int, bool, bool, dict[str, Any]]:
         self.command = action.copy()
+        self.step_count += 1
+        if self.reset_replay_behavior:
+            if self.step_count == 1:
+                self.tower_on_initial_peg = False
+            elif self.restore_on_step:
+                self.tower_on_initial_peg = True
+            self.success = not self.tower_on_initial_peg
         return (
             None,
             1,
@@ -65,6 +90,10 @@ class FakeEnv:
             },
         )
 
+    def _is_tower_on_peg(self, peg: int) -> bool:
+        assert peg == 1
+        return self.tower_on_initial_peg
+
     def close(self) -> None:
         self.closed = True
 
@@ -75,12 +104,10 @@ def simulator(monkeypatch: pytest.MonkeyPatch) -> FakeEnv:
 
     def make(env_id: str, **kwargs: Any) -> FakeEnv:
         assert env_id == "hanoi-cpu-triple-task2-v0"
-        assert kwargs == {
-            "control_timestep": 1 / 30,
-            "physics_timestep": 1 / 600,
-            "width": 224,
-            "height": 224,
-        }
+        env.make_kwargs = kwargs
+        assert kwargs["control_timestep"] == 1 / 30
+        assert kwargs["physics_timestep"] == 1 / 600
+        assert kwargs["width"] == kwargs["height"] == 224
         return env
 
     monkeypatch.setattr(
@@ -148,6 +175,48 @@ def test_invalid_seed_hash_bounds_and_actions_fail_before_execution(simulator: F
     assert simulator.command is None
 
 
+def test_reset_embodiment_replays_episode_and_scores_original_stack(simulator: FakeEnv) -> None:
+    simulator.reset_replay_behavior = True
+    robot = OCBenchHanoiResetEmbodiment({7: np.zeros((1, 7), dtype=np.float32)})
+    scene = Scene(
+        "reset-7",
+        RESET_INSTRUCTION,
+        metadata={
+            "reset_seed": 123,
+            "dataset_episode": 7,
+            "initial_world_sha256": "cross-runtime-hash",
+        },
+    )
+
+    observation = robot.reset(scene, seed=456)
+
+    assert simulator.make_kwargs["terminate_at_success"] is False
+    assert simulator.make_kwargs["max_episode_steps"] == 14_001
+    assert set(observation.extra[REFERENCE_IMAGES_KEY]) == {"front", "side", "wrist"}
+    assert robot.reset_provenance["dataset_episode"] == 7
+    assert robot.reset_provenance["setup_replay_steps"] == 1
+    assert robot.reset_provenance["initial_world_hash_matches"] is False
+    assert not simulator.tower_on_initial_peg
+
+    simulator.restore_on_step = True
+    for expected_streak in range(1, RESET_STABILITY_STEPS + 1):
+        result = robot.step(Action(np.array([0, 0, 0, 0, 0, 0, 0.5])))
+        assert result.info["reset_stability_steps"] == expected_streak
+        assert result.terminated is (expected_streak == RESET_STABILITY_STEPS)
+    assert result.terminated and result.termination_reason == "success"
+    assert result.info["reset_success"] is True
+    assert result.info["source_task_success"] is False
+
+
+@pytest.mark.parametrize(
+    "actions",
+    [{}, {True: np.zeros((1, 7))}, {0: np.zeros((7,))}, {0: np.full((1, 7), np.nan)}],
+)
+def test_reset_embodiment_rejects_invalid_episode_actions(actions: dict[Any, Any]) -> None:
+    with pytest.raises(ValueError):
+        OCBenchHanoiResetEmbodiment(actions)
+
+
 def test_task_excludes_privileged_layout_and_preserves_all_scheduled_scenes(tmp_path: Path) -> None:
     path = tmp_path / "scenes.json"
     path.write_text(
@@ -174,3 +243,48 @@ def test_task_excludes_privileged_layout_and_preserves_all_scheduled_scenes(tmp_
         hanoi_task(str(path), split="train")
     with pytest.raises(ValueError):
         hanoi_task(str(path), num_scenes=2)
+
+
+def test_reset_task_joins_split_to_episode_provenance(tmp_path: Path) -> None:
+    split_path = tmp_path / "split.json"
+    ledger_path = tmp_path / "ledger.json"
+    split_path.write_text(
+        json.dumps(
+            {
+                "dataset_repo": "owner/dataset",
+                "dataset_revision": "revision",
+                "validation": [7],
+                "test": [9],
+            }
+        )
+    )
+    ledger_path.write_text(
+        json.dumps(
+            [
+                {
+                    "dataset_episode": 7,
+                    "seed": 123,
+                    "initial_world_sha256_reconstructed": "world-7",
+                },
+                {
+                    "dataset_episode": 8,
+                    "seed": 456,
+                    "initial_world_sha256_reconstructed": "world-8",
+                },
+            ]
+        )
+    )
+
+    task = hanoi_reset_task(str(split_path), str(ledger_path), num_scenes=1)
+
+    assert task.name == "ocbench-hanoi-triple-task2-reference-reset-30hz"
+    assert task.scenes[0].instruction == RESET_INSTRUCTION
+    assert task.scenes[0].metadata == {
+        "reset_seed": 123,
+        "initial_world_sha256": "world-7",
+        "dataset_episode": 7,
+    }
+    assert [scorer.name for scorer in task.scorers] == ["success_at_end", "episode_length"]
+    assert task.metadata["protocol"] == "capx-hanoi-reference-reset-30hz-v1"
+    with pytest.raises(ValueError, match="missing"):
+        hanoi_reset_task(str(split_path), str(ledger_path), split="test", num_scenes=1)
