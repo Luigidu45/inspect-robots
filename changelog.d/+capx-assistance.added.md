@@ -1,0 +1,1 @@
+**CaP-X plugin:** add none, IK and SAM3+IK assistance profiles that select both advertised and installed helpers. Support injected local IK, standalone SAM3 or Pyroki clients, and separate service transports while preserving the existing default profile.

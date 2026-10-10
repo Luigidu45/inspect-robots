@@ -111,6 +111,11 @@ class MotionQueue:
         """Return a defensive copy of the current queued endpoint, if seeded."""
         return None if self._cursor is None else self._cursor.copy()
 
+    @property
+    def arm_cursor(self) -> npt.NDArray[np.float64]:
+        """Return queued arm joints as an IK seed without the gripper dimension."""
+        return self._require_cursor()[list(self._arm_indices)].copy()
+
     def reset(self) -> None:
         """Clear queued actions and the observation-derived cursor."""
         self._cursor = None

@@ -38,9 +38,10 @@ from inspect_robots_agent import (
     png_data_url,
     resolve_provider,
 )
+from inspect_robots_capx._assistance import IKSolver, assistance_helpers
 from inspect_robots_capx._motion import MotionQueue
 from inspect_robots_capx._sandbox import CodeSandbox, ExecutionResult
-from inspect_robots_capx._servers import CapxServerClients
+from inspect_robots_capx._servers import CapxServerClients, PyrokiClient, Sam3Client
 
 _EFFORT_LEVELS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max"})
 _WIRE_FORMATS = frozenset({"chat", "responses"})
@@ -107,6 +108,33 @@ Action profile: {action_summary}
 
 {helper_docs}"""
 
+_MOTION_HELPER_DOCS = """Helpers available in the persistent namespace:
+move_to_joints(joints: np.ndarray) -> None
+    Queue arm joints in radians while holding the gripper.
+move_to_configuration(configuration: np.ndarray) -> None
+    Queue the full action vector, including fractional gripper opening.
+open_gripper() / close_gripper() -> None
+    Queue gripper ramps while holding the arm.
+`obs` contains the current images, state, and observation.extra entries.
+Only the documented helpers below are installed.
+"""
+_IK_HELPER_DOCS = """solve_ik(position: np.ndarray, quaternion_wxyz: np.ndarray) -> np.ndarray
+    Solve for arm joints using the configured robot kinematics. Position is
+    XYZ in meters in the documented robot frame; orientation is unit WXYZ.
+    For OCBench, the target is the Robotiq pinch point in world coordinates.
+    Local IK seeds from the queued arm cursor; HTTP IK uses its server seed.
+    Solving does not move the robot.
+    An IK exception means no valid solution was accepted; revise the target.
+"""
+_SAM3_HELPER_DOCS = """segment(text: str) -> list[dict]
+    Segment the current RGB image from the configured camera using SAM3.
+    Each result has a boolean (H, W) mask, a pixel-space XYXY box, score and label.
+    The list can be empty. No match is perception uncertainty, not task failure.
+    Masks describe the initial observation of this turn, before queued movement.
+    They do not provide depth or a world-space pose; never pass pixel coordinates
+    directly to solve_ik. No grasp-planning helper is installed in this profile.
+"""
+
 
 def _sanitize(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return an image-free deep copy suitable for persistence and visualization."""
@@ -136,6 +164,9 @@ class CapxPolicyConfig(PolicyConfig):
     #: provider default applies. The recorded value is the normalized one, so
     #: an operator ``none`` reads back as ``"none"`` rather than a bare omission.
     effort: str | None = None
+    assistance: str = "default"
+    enabled_helpers: tuple[str, ...] = ()
+    ik_backend: str = "pyroki"
     sam3_url: str = "http://127.0.0.1:8114"
     graspnet_url: str = "http://127.0.0.1:8115"
     pyroki_url: str = "http://127.0.0.1:8116"
@@ -186,7 +217,13 @@ class CapxPolicy(PolicyBase):
         prior_learnings: str | None = None,
         transport: httpx.BaseTransport | None = None,
         env: dict[str, str] | None = None,
+        assistance: str = "default",
+        ik_solver: IKSolver | None = None,
+        service_transport: httpx.BaseTransport | None = None,
     ) -> None:
+        enabled_helpers = assistance_helpers(assistance)
+        if ik_solver is not None and assistance == "none":
+            raise ValueError("ik_solver requires IK assistance")
         prior_learnings_path: str | None = None
         prior_learnings_text: str | None = None
         prior_learnings_sha256: str | None = None
@@ -260,13 +297,37 @@ class CapxPolicy(PolicyBase):
             )
         else:
             self._client = ChatClient(provider, transport=transport)
-        self._servers = CapxServerClients(
-            sam3_url=sam3_url,
-            graspnet_url=graspnet_url,
-            pyroki_url=pyroki_url,
-            request_timeout_s=request_timeout_s,
-            transport=transport,
+        self._servers = (
+            CapxServerClients(
+                sam3_url=sam3_url,
+                graspnet_url=graspnet_url,
+                pyroki_url=pyroki_url,
+                request_timeout_s=request_timeout_s,
+                transport=service_transport if service_transport is not None else transport,
+            )
+            if assistance == "default"
+            else None
         )
+        self._sam3_client = (
+            Sam3Client(
+                sam3_url,
+                request_timeout_s=request_timeout_s,
+                transport=service_transport if service_transport is not None else transport,
+            )
+            if assistance == "sam3_ik"
+            else None
+        )
+        self._pyroki_client = (
+            PyrokiClient(
+                pyroki_url,
+                request_timeout_s=request_timeout_s,
+                transport=service_transport if service_transport is not None else transport,
+            )
+            if assistance in ("ik", "sam3_ik") and ik_solver is None
+            else None
+        )
+        self._assistance = assistance
+        self._ik_solver = ik_solver
         self._camera_config = camera
         self._depth_key = depth_key
         self._intrinsics_key = intrinsics_key
@@ -286,6 +347,9 @@ class CapxPolicy(PolicyBase):
             api_key_env=api_key_env,
             wire=wire,
             effort=resolved_effort,
+            assistance=assistance,
+            enabled_helpers=enabled_helpers,
+            ik_backend="none" if assistance == "none" else "local" if ik_solver else "pyroki",
             sam3_url=sam3_url,
             graspnet_url=graspnet_url,
             pyroki_url=pyroki_url,
@@ -389,6 +453,10 @@ class CapxPolicy(PolicyBase):
             depth_key=self._depth_key,
             intrinsics_key=self._intrinsics_key,
             extrinsics_key=self._extrinsics_key,
+            assistance=self._assistance,
+            ik_solver=self._ik_solver,
+            sam3_client=self._sam3_client,
+            pyroki_client=self._pyroki_client,
         )
         self._state_key = state_key
         self._state_labels = (state_key, labels) if labels is not None else None
@@ -419,7 +487,15 @@ class CapxPolicy(PolicyBase):
             budget=self._max_llm_calls,
             name=self._embodiment_name,
             action_summary=self._action_summary,
-            helper_docs=_HELPER_DOCS.format(
+            helper_docs=(
+                _HELPER_DOCS
+                if self._assistance == "default"
+                else (
+                    _MOTION_HELPER_DOCS
+                    + (_IK_HELPER_DOCS if self._assistance in ("ik", "sam3_ik") else "")
+                    + (_SAM3_HELPER_DOCS if self._assistance == "sam3_ik" else "")
+                )
+            ).format(
                 depth_key=self._depth_key,
                 intrinsics_key=self._intrinsics_key,
                 extrinsics_key=self._extrinsics_key,
@@ -444,7 +520,10 @@ class CapxPolicy(PolicyBase):
         self._reference_images_sent = False
         if self._sandbox is not None:
             self._sandbox.reset()
-        self._servers.pyroki.reset()
+        if self._servers is not None:
+            self._servers.pyroki.reset()
+        if self._pyroki_client is not None:
+            self._pyroki_client.reset()
         self._echo(f"[capx] goal: {scene.instruction}")
 
     def transcript(self) -> list[dict[str, Any]] | None:
@@ -534,7 +613,12 @@ class CapxPolicy(PolicyBase):
             return
         self._closed = True
         self._client.close()
-        self._servers.close()
+        if self._servers is not None:
+            self._servers.close()
+        if self._sam3_client is not None:
+            self._sam3_client.close()
+        if self._pyroki_client is not None:
+            self._pyroki_client.close()
         with contextlib.suppress(Exception):  # defensive during interpreter teardown
             atexit.unregister(self.close)
 

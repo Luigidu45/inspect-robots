@@ -17,8 +17,9 @@ import numpy as np
 import numpy.typing as npt
 
 from inspect_robots.types import Observation
+from inspect_robots_capx._assistance import IKSolver, assistance_helpers
 from inspect_robots_capx._motion import MotionQueue
-from inspect_robots_capx._servers import CapxServerClients
+from inspect_robots_capx._servers import CapxServerClients, PyrokiClient, Sam3Client
 
 
 @dataclass(frozen=True)
@@ -61,14 +62,22 @@ class CodeSandbox:
     def __init__(
         self,
         *,
-        servers: CapxServerClients,
+        servers: CapxServerClients | None,
         motion: MotionQueue,
         camera: str,
         state_key: str,
         depth_key: str = "depth",
         intrinsics_key: str = "intrinsics",
         extrinsics_key: str = "extrinsics",
+        assistance: str = "default",
+        ik_solver: IKSolver | None = None,
+        sam3_client: Sam3Client | None = None,
+        pyroki_client: PyrokiClient | None = None,
     ) -> None:
+        self._helpers = assistance_helpers(assistance)
+        self._ik_solver = ik_solver
+        self._sam3_client = sam3_client
+        self._pyroki_client = pyroki_client
         self._servers = servers
         self._motion = motion
         self._camera = camera
@@ -84,8 +93,7 @@ class CodeSandbox:
         """Start a fresh trial namespace with only the documented helpers bound."""
         self._observation = None
         self._motion.reset()
-        self._namespace = {
-            "__builtins__": __builtins__,
+        helpers = {
             "segment": self._segment,
             "plan_grasp": self._plan_grasp,
             "solve_ik": self._solve_ik,
@@ -94,6 +102,8 @@ class CodeSandbox:
             "open_gripper": self._motion.open_gripper,
             "close_gripper": self._motion.close_gripper,
         }
+        self._namespace = {"__builtins__": __builtins__}
+        self._namespace.update({name: helpers[name] for name in self._helpers})
 
     def set_observation(self, observation: Observation) -> None:
         """Expose one turn's observation and reseed motion from its full state field."""
@@ -150,9 +160,17 @@ class CodeSandbox:
             image = observation.images[self._camera]
         except KeyError as exc:
             raise KeyError(f"observation has no configured camera {self._camera!r}") from exc
-        return self._servers.sam3.segment(image, text)
+        sam3 = self._sam3_client or (self._servers.sam3 if self._servers is not None else None)
+        if sam3 is None:
+            raise RuntimeError("SAM3 is unavailable in this assistance profile")
+        results = sam3.segment(image, text)
+        if any(result["mask"].shape != image.shape[:2] for result in results):
+            raise ValueError("SAM3 mask size does not match the selected RGB camera")
+        return results
 
     def _plan_grasp(self, mask: npt.NDArray[Any]) -> tuple[npt.NDArray[Any], npt.NDArray[Any]]:
+        if self._servers is None:
+            raise RuntimeError("grasp planning is unavailable in this assistance profile")
         return self._servers.graspnet.plan(
             self._extra_array(self._depth_key),
             self._extra_array(self._intrinsics_key),
@@ -164,7 +182,24 @@ class CodeSandbox:
         position: npt.NDArray[Any],
         quaternion_wxyz: npt.NDArray[Any],
     ) -> npt.NDArray[np.float64]:
-        return self._servers.pyroki.solve_ik(
+        if self._ik_solver is not None:
+            joints = np.asarray(
+                self._ik_solver(
+                    np.asarray(position, dtype=np.float64),
+                    np.asarray(quaternion_wxyz, dtype=np.float64),
+                    self._motion.arm_cursor,
+                ),
+                dtype=np.float64,
+            )
+            if joints.shape != (self._motion.arm_dof,) or not np.all(np.isfinite(joints)):
+                raise ValueError("IK solver must return a finite arm-joint vector")
+            return joints.copy()
+        pyroki = self._pyroki_client or (
+            self._servers.pyroki if self._servers is not None else None
+        )
+        if pyroki is None:
+            raise RuntimeError("IK is unavailable in this assistance profile")
+        return pyroki.solve_ik(
             position,
             quaternion_wxyz,
             self._motion.arm_dof,

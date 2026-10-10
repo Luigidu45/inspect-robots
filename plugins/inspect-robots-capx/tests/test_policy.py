@@ -549,6 +549,7 @@ def test_config_and_close_lifecycle() -> None:
     assert policy.config.gripper_open_is_high is False
     policy.close()
     policy.close()
+    assert policy._servers is not None
     assert policy._servers._http.is_closed
 
 

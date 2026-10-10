@@ -248,3 +248,29 @@ inspect-robots view LOG.json
 - Direct OpenAI reasoning models may require `-P wire=responses`. Chat-only
   endpoints should keep `-P wire=chat`; `-P effort=none` sends the true minimum
   and can disable reasoning where function or code-generation requests reject it.
+
+
+## Optional assistance profiles:
+
+`CapxPolicy(assistance="none")` exposes only joint and gripper motion helpers.
+`CapxPolicy(assistance="ik", ik_solver=solver)` adds `solve_ik` using an injected
+local callable. The callable takes XYZ, WXYZ and an arm-joint seed as NumPy
+arrays, and returns finite arm joints. Its seed follows the queued motion
+cursor. These modes create no perception or IK HTTP clients.
+
+`CapxPolicy(assistance="sam3_ik", ik_solver=solver)` adds SAM3 segmentation
+while keeping grasp planning disabled. It creates only a SAM3 service client
+when local IK is injected. Without a callable, `ik` and `sam3_ik` use a
+standalone Pyroki client. `service_transport` optionally separates model and
+service transports for integration tests.
+The default `assistance="default"` retains the existing SAM3, Contact-GraspNet
+and Pyroki helpers for compatibility. Unsupported profiles raise an error
+before clients are created. Helpers excluded by a profile are removed from
+both the prompt and execution namespace. This is API selection, not a security
+sandbox: generated Python still has evaluator-process privileges.
+
+The [Hanoi reset runner](../../experiments/capx_hanoi/README.md) exposes only
+`--assistance none`, `--assistance ik` and `--assistance sam3_ik`. Both IK
+profiles use local UR5e/Robotiq kinematics. `sam3_ik` requires an explicit
+`--sam3-url` and validates segmentation before preparing reset scenes. The
+runner defaults to `none` and leaves the native `agent` backend unchanged.
