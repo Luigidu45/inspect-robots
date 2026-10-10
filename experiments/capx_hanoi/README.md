@@ -307,7 +307,9 @@ el modelo base y el ajustado con las mismas 100 escenas.
 
 ## Fase 3: reset agentico desde episodios resueltos:
 
-[run_reset.py](run_reset.py) ejecuta el protocolo de reset sin una VLA. Para
+[run_reset.py](run_reset.py) ejecuta el protocolo de reset sin una VLA. El
+backend se elige explícitamente con `--policy`: `agent` es el agente nativo y
+predeterminado; `capx` conserva el baseline opcional de código generado. Para
 cada escena seleccionada de `split_manifest.json`:
 
 ```text
@@ -315,7 +317,7 @@ reset OCBench con la semilla reconstruida
   -> capturar front, side y wrist como referencia privada del objetivo
   -> reproducir todas las acciones del episodio hasta su Hanoi resuelto
   -> reiniciar únicamente el contador de pasos del agente
-  -> entregar referencia + RGB actual + joint_pos a CaP-X
+  -> entregar referencia + RGB actual + joint_pos a la política seleccionada
   -> evaluar después de cada acción la torre en el poste inicial
 ```
 
@@ -353,10 +355,14 @@ Esto sigue el patrón de tareas de manipulación de describir directamente el
 estado objetivo. El veredicto no depende del texto ni de `FINISH`; lo calcula
 el simulador con estado privilegiado que nunca se incorpora a la observación.
 
-CaP-X envía las imágenes de referencia sólo en la primera llamada del trial,
-claramente separadas de las cámaras actuales. Después permanecen en el historial
-del modelo. Cada observación actual conserva las tres cámaras. Los logs guardan
-frames, acciones, transcripción, éxito y longitud del intento.
+Tanto `agent` como `capx` envían las imágenes de referencia sólo en la primera
+llamada del trial, claramente separadas de las cámaras actuales. Después
+permanecen en el historial del modelo. Para `agent`, el conjunto nativo de
+herramientas se deriva del action space: en esta variante joint-space son
+`move_joints`, `done` y `give_up` (más `take_pic` si se selecciona
+`--images on_demand`). CaP-X no se importa ni necesita servidores cuando se
+usa `--policy agent`. Los logs guardan frames, acciones, transcripción, éxito y
+longitud del intento.
 
 ### Preparar los datos:
 
@@ -384,46 +390,42 @@ episodios. Si no está instalado:
 uv pip install --python /tmp/capx-hanoi-env/bin/python pyarrow huggingface-hub
 ```
 
-### Configurar la API y ejecutar:
+### Configurar la API y ejecutar el agente nativo:
 
 La clave se coloca en una variable de entorno. No se escribe en archivos del
 repositorio ni se pasa literalmente por CLI:
 
 ```bash
-export CAPX_API_KEY='tu-clave-del-endpoint'
-export CAPX_BASE_URL='https://tu-endpoint.example/v1'
-export CAPX_MODEL='identificador-exacto-aceptado-por-el-endpoint'
+export OPENAI_API_KEY='tu-clave-de-proyecto'
 ```
 
 Prueba mínima con un episodio de validación:
 
 ```bash
 env -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
-  CAPX_API_KEY="$CAPX_API_KEY" \
   /tmp/capx-hanoi-env/bin/python experiments/capx_hanoi/run_reset.py \
   --dataset-root /tmp/capx-hanoi-snapshot \
-  --model "$CAPX_MODEL" --base-url "$CAPX_BASE_URL" \
-  --api-key-env CAPX_API_KEY --wire chat \
+  --policy agent --model gpt-6-astra --base-url https://api.openai.com/v1 \
+  --api-key-env OPENAI_API_KEY --wire responses --effort low \
+  --max-llm-calls 8 \
   --split validation --num-scenes 1 \
-  --log-dir logs/capx-hanoi-reset-smoke
+  --log-dir logs/ocbench-hanoi-reset-agent-astra-8calls
 ```
 
-Usar `--wire responses` sólo si el endpoint implementa Responses API. El
-modelo debe admitir imágenes. `run_reset.py` no presupone que un nombre usado
-en una interfaz de chat sea también un identificador disponible en la API.
+El modelo debe admitir imágenes y function calling. GPT-6 Astra requiere
+`--wire responses` para las herramientas. Con `--images always` (el valor por
+defecto) recibe las tres cámaras actuales en cada turno; no se levanta ningún
+servidor CaP-X.
 
-Para OpenAI, la configuración concreta de GPT-6 Astra es:
+Para comparar después con CaP-X, seleccionar el backend explícitamente:
 
 ```bash
-export OPENAI_API_KEY='tu-clave-de-proyecto'
-export CAPX_BASE_URL='https://api.openai.com/v1'
-export CAPX_MODEL='gpt-6-astra'
-
 env -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
   /tmp/capx-hanoi-env/bin/python experiments/capx_hanoi/run_reset.py \
   --dataset-root /tmp/capx-hanoi-snapshot \
-  --model "$CAPX_MODEL" --base-url "$CAPX_BASE_URL" \
+  --policy capx --model gpt-6-astra --base-url https://api.openai.com/v1 \
   --api-key-env OPENAI_API_KEY --wire responses \
+  --max-llm-calls 8 \
   --split validation --num-scenes 1 \
   --log-dir logs/capx-hanoi-reset-astra-smoke
 ```

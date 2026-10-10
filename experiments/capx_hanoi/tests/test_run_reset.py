@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 import numpy as np
 import pytest
-from inspect_robots_capx import CapxPolicy
+from inspect_robots_agent import LLMAgentPolicy
 from inspect_robots_ocbench import OCBenchHanoiResetEmbodiment
 
 from inspect_robots.scene import Scene
@@ -41,12 +41,20 @@ def test_reset_runner_counts_success_and_sends_reference_images(
         return httpx.Response(
             200,
             json={
-                "choices": [
+                "status": "completed",
+                "output": [
                     {
-                        "message": {
-                            "role": "assistant",
-                            "content": "move_to_configuration([0, 0, 0, 0, 0, 0, 0.8])",
-                        }
+                        "id": "fc_0",
+                        "type": "function_call",
+                        "status": "completed",
+                        "call_id": "call_0",
+                        "name": "move_joints",
+                        "arguments": json.dumps(
+                            {
+                                "targets": {"gripper": 0.8},
+                                "note": "I open the gripper to verify native tool execution.",
+                            }
+                        ),
                     }
                 ]
             },
@@ -70,11 +78,22 @@ def test_reset_runner_counts_success_and_sends_reference_images(
                 info={"success": True, "reset_success": True},
             )
 
-    def policy(**kwargs: Any) -> CapxPolicy:
-        return CapxPolicy(**kwargs, transport=httpx.MockTransport(respond), env={})
+    def policy(_args: Any) -> LLMAgentPolicy:
+        return LLMAgentPolicy(
+            model="scripted-test",
+            base_url="http://test/v1",
+            api_key_env="TEST_KEY",
+            wire="responses",
+            max_llm_calls=8,
+            effort="low",
+            images="always",
+            depth="off",
+            transport=httpx.MockTransport(respond),
+            env={},
+        )
 
     monkeypatch.setattr(run_reset, "OCBenchHanoiResetEmbodiment", World)
-    monkeypatch.setattr(run_reset, "CapxPolicy", policy)
+    monkeypatch.setattr(run_reset, "_build_policy", policy)
     monkeypatch.setattr(
         run_reset,
         "load_episode_actions",
@@ -103,6 +122,13 @@ def test_reset_runner_counts_success_and_sends_reference_images(
     assert summary["scheduled_scenes"] == summary["successful_scenes"] == 1
     assert summary["success_rate_all_scheduled"] == 1
     assert summary["mean_agent_steps_on_success"] == 1
-    contents = requests[0]["messages"][-1]["content"]
-    assert sum(part["type"] == "image_url" for part in contents) == 6
+    assert summary["policy"] == "agent"
+    assert summary["max_llm_calls"] == 8
+    contents = requests[0]["input"][-1]["content"]
+    assert sum(part["type"] == "input_image" for part in contents) == 6
     assert "Reference goal images" in json.dumps(contents)
+    assert {tool["name"] for tool in requests[0]["tools"]} == {
+        "move_joints",
+        "done",
+        "give_up",
+    }

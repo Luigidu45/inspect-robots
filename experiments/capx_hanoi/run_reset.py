@@ -1,17 +1,57 @@
-"""Evaluate CaP-X restoring solved OCBench Hanoi episodes to their reference state."""
+"""Evaluate a native or CaP-X agent restoring solved OCBench Hanoi episodes."""
 
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
+from typing import Any
 
-from inspect_robots_capx import CapxPolicy
 from inspect_robots_ocbench import OCBenchHanoiResetEmbodiment, hanoi_reset_task
 from reset_data import load_episode_actions
 
 from inspect_robots import eval
 from inspect_robots.approver import ChainApprover, ClampApprover, DeltaLimitApprover
+
+
+def _build_policy(args: argparse.Namespace) -> Any:
+    """Construct only the selected optional policy backend.
+
+    The native ``agent`` path never imports CaP-X, so it needs neither its
+    package nor its perception/IK servers.  ``capx`` remains available as an
+    explicit comparative baseline.
+    """
+    common = {
+        "model": args.model,
+        "base_url": args.base_url,
+        "api_key_env": args.api_key_env,
+        "wire": args.wire,
+        "max_llm_calls": args.max_llm_calls,
+        "prior_learnings": args.prior_learnings,
+    }
+    if args.policy == "agent":
+        try:
+            from inspect_robots_agent import LLMAgentPolicy
+        except ImportError as exc:
+            raise ImportError(
+                "The native reset agent needs inspect-robots-agent. "
+                "Install it in this interpreter before running --policy agent."
+            ) from exc
+        return LLMAgentPolicy(
+            **common,
+            effort=args.effort,
+            images=args.images,
+            depth="off",
+        )
+
+    try:
+        from inspect_robots_capx import CapxPolicy
+    except ImportError as exc:
+        raise ImportError(
+            "--policy capx needs inspect-robots-capx. Install that optional plugin "
+            "and start its requested services first."
+        ) from exc
+    return CapxPolicy(**common, camera="front")
 
 
 def main() -> int:
@@ -28,10 +68,27 @@ def main() -> int:
         default="OPENAI_API_KEY",
         help="Environment variable name containing the key, never a literal key",
     )
-    parser.add_argument("--wire", choices=["chat", "responses"], default="chat")
+    parser.add_argument(
+        "--policy",
+        choices=["agent", "capx"],
+        default="agent",
+        help="Native function-calling agent (default) or the optional CaP-X code agent.",
+    )
+    parser.add_argument("--wire", choices=["chat", "responses"], default="responses")
     parser.add_argument("--split", choices=["validation", "test"], default="validation")
     parser.add_argument("--num-scenes", type=int)
-    parser.add_argument("--max-llm-calls", type=int, default=100)
+    parser.add_argument("--max-llm-calls", type=int, default=8)
+    parser.add_argument(
+        "--effort",
+        default="low",
+        help="Reasoning effort for --policy agent; omitted by CaP-X.",
+    )
+    parser.add_argument(
+        "--images",
+        choices=["always", "on_demand"],
+        default="always",
+        help="Current-camera delivery; reference frames are always sent once.",
+    )
     parser.add_argument(
         "--split-manifest",
         type=Path,
@@ -45,7 +102,7 @@ def main() -> int:
     parser.add_argument(
         "--prior-learnings", help="Optional UTF-8 operating notes without privileged geometry"
     )
-    parser.add_argument("--log-dir", default="logs/capx-hanoi-reset")
+    parser.add_argument("--log-dir", default="logs/ocbench-hanoi-reset")
     args = parser.parse_args()
 
     task = hanoi_reset_task(
@@ -57,15 +114,7 @@ def main() -> int:
     episode_ids = [int(scene.metadata["dataset_episode"]) for scene in task.scenes]
     episode_actions = load_episode_actions(args.dataset_root, episode_ids)
     robot = OCBenchHanoiResetEmbodiment(episode_actions)
-    policy = CapxPolicy(
-        model=args.model,
-        base_url=args.base_url,
-        api_key_env=args.api_key_env,
-        wire=args.wire,
-        camera="front",
-        max_llm_calls=args.max_llm_calls,
-        prior_learnings=args.prior_learnings,
-    )
+    policy = _build_policy(args)
     guard = ChainApprover(
         ClampApprover(robot.info.action_space), DeltaLimitApprover(robot.info.action_space)
     )
@@ -100,12 +149,16 @@ def main() -> int:
             "evaluation_wall_time_s": log.stats.duration_s,
             "mean_inference_latency_s": log.stats.mean_inference_latency_s,
             "model": args.model,
+            "policy": args.policy,
             "base_url": args.base_url,
             "wire": args.wire,
+            "max_llm_calls": args.max_llm_calls,
+            "effort": args.effort if args.policy == "agent" else None,
+            "images": args.images if args.policy == "agent" else None,
             "split": args.split,
             "dataset_root": str(args.dataset_root.resolve()),
             "dataset_episodes": episode_ids,
-            "protocol": "capx-hanoi-reference-reset-30hz-v1",
+            "protocol": "ocbench-hanoi-reference-reset-30hz-v1",
         }
         text = json.dumps(summary, indent=2) + "\n"
         output = Path(args.log_dir)
@@ -114,7 +167,9 @@ def main() -> int:
         (output / f"summary-{args.split}-{stamp}.json").write_text(text, encoding="utf-8")
         print(text)
     finally:
-        policy.close()
+        close_policy = getattr(policy, "close", None)
+        if callable(close_policy):
+            close_policy()
         robot.close()
     return 0 if log is not None and log.status == "success" else 1
 

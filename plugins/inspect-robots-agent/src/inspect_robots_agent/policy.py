@@ -63,6 +63,9 @@ _MAX_CONSECUTIVE_FAILURES = 3
 # Shared by the camera label writer and the reader that recovers revealed
 # camera names from it, so the two cannot drift apart again.
 _CAMERA_LABEL_PREFIX = "camera "
+# Optional, embodiment-provided goal frames. This is an observation convention,
+# not a task-specific tool: any goal-conditioned manipulation task may supply it.
+_REFERENCE_IMAGES_KEY = "reference_images"
 
 #: Anthropic's base URL, allowlisted by the Messages-endpoint guard below.
 _ANTHROPIC_BASE = _DIRECT_PROVIDERS["anthropic"].base_url
@@ -813,6 +816,7 @@ class LLMAgentPolicy(PolicyBase):
         self._usage_totals: dict[str, int] = {}
         self._pending: _PendingCapture | None = None
         self._revealed: set[str] = set()
+        self._reference_images_sent = False
         self._max_steps: int | None = None
 
     # -- lifecycle ---------------------------------------------------------------
@@ -889,6 +893,7 @@ class LLMAgentPolicy(PolicyBase):
         self._usage_totals.clear()
         self._pending = None
         self._revealed.clear()
+        self._reference_images_sent = False
 
     def on_trial_start(self, scene_id: str, epoch: int, log_dir: str, run_id: str) -> None:
         """Begin streaming wire attempts for the next trial when enabled."""
@@ -981,7 +986,10 @@ class LLMAgentPolicy(PolicyBase):
             reveal=reveal,
             narration=narration,
             depth=depth,
+            include_reference=not self._reference_images_sent,
         )
+        if _REFERENCE_IMAGES_KEY in observation.extra:
+            self._reference_images_sent = True
         if self._images == "on_demand":
             available = _quoted_names(tuple(observation.images))
             camera_line = (
@@ -989,7 +997,17 @@ class LLMAgentPolicy(PolicyBase):
                 if available
                 else "No camera images are available to take_pic in this observation."
             )
-            observation_content[0]["text"] += f"\n{camera_line}"
+            current = next(
+                (
+                    part
+                    for part in reversed(observation_content)
+                    if part.get("type") == "text"
+                    and str(part.get("text", "")).startswith("Current observation.")
+                ),
+                None,
+            )
+            if current is not None:
+                current["text"] += f"\n{camera_line}"
         self._messages.append({"role": "user", "content": observation_content})
         summary = f"{len(observation.images)} camera(s)"
         if self._images == "on_demand":
@@ -1349,8 +1367,31 @@ def _observation_content(
     reveal: tuple[str, ...] | None = None,
     narration: str | None = None,
     depth: Mapping[str, Any] | None = None,
+    include_reference: bool = True,
 ) -> list[dict[str, Any]]:
-    """State as readable text plus camera frames as inline PNG data URLs."""
+    """State plus current cameras, and optional goal frames on the first turn."""
+    parts: list[dict[str, Any]] = []
+    if include_reference and _REFERENCE_IMAGES_KEY in observation.extra:
+        references = observation.extra[_REFERENCE_IMAGES_KEY]
+        if not isinstance(references, Mapping) or not references:
+            raise ValueError("observation.extra['reference_images'] must be a non-empty mapping")
+        parts.append(
+            {
+                "type": "text",
+                "text": (
+                    "Reference goal images. These show the desired object arrangement; "
+                    "the robot arm pose does not need to match."
+                ),
+            }
+        )
+        for name, image in references.items():
+            array = np.asarray(image)
+            if array.ndim != 3 or array.shape[2] != 3 or array.dtype != np.uint8:
+                raise ValueError(
+                    "observation.extra['reference_images'] values must be HxWx3 uint8 arrays"
+                )
+            parts.append({"type": "text", "text": f"reference camera {name!r}:"})
+            parts.append({"type": "image_url", "image_url": {"url": png_data_url(array)}})
     lines = ["Current observation."]
     if observation.instruction:
         lines.append(f"Instruction: {observation.instruction}")
@@ -1365,7 +1406,7 @@ def _observation_content(
     lines.extend(_operator_lines(observation))
     if narration is not None:
         lines.append(narration)
-    parts: list[dict[str, Any]] = [{"type": "text", "text": "\n".join(lines)}]
+    parts.append({"type": "text", "text": "\n".join(lines)})
     parts.extend(_image_parts(observation, reveal=reveal, depth=depth))
     return parts
 
