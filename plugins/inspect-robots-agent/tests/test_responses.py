@@ -1030,6 +1030,36 @@ def test_retry_after_header_overrides_exponential_backoff(
     assert sleeps == [7.0]
 
 
+def test_rate_limit_wait_notice_is_brief_and_precedes_sleep(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(429, headers={"Retry-After": "1728"}, text="private details")
+        return httpx.Response(200, json=_response(_message("ok")))
+
+    def sleep(delay: float) -> None:
+        assert delay == 1728
+        notice = capsys.readouterr().err
+        assert notice == (
+            "[llm] HTTP 429: request rejected for m. Retry in 28 min 48 s; attempt 2/3.\n"
+        )
+        assert "private details" not in notice
+
+    monkeypatch.setattr("inspect_robots_agent._responses.time.sleep", sleep)
+    client = _client(handler)
+    try:
+        assert client.complete(messages=[], tools=[]).content == "ok"
+        assert calls == 2
+        assert capsys.readouterr().err == ""
+    finally:
+        client.close()
+
+
 def test_transport_errors_retry_then_succeed() -> None:
     calls = 0
 

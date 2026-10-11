@@ -315,6 +315,21 @@ inspect-robots "pick up the cube" --policy agent \
     --embodiment cubepick
 ```
 
+Chat and Responses print one brief line before each HTTP 429 retry wait, even
+without live transcripts. Recognized rate-limit errors name the model and,
+when supplied by the provider, the request/token window and used/limit counts.
+Waits use hours, minutes, and seconds. The notice describes the next retry,
+not a guaranteed replenishment of the account's capacity. Unknown 429 errors
+keep a generic label rather than assuming rate limiting. Explicit credit,
+spend-limit, and organization usage-limit errors stop without waiting or
+retrying. Original provider responses remain in the wire capture.
+
+The wire capture currently records response bodies, not response headers.
+Historical captures therefore cannot reconstruct `Retry-After` or the
+`x-ratelimit-*` headers. Limit details in notices depend on recognized provider
+wording and are omitted when unavailable; they do not provide a complete
+account-wide usage history.
+
 The effective retry settings are recorded in `EvalSpec.policy_config` so a
 run can be reproduced from its log.
 

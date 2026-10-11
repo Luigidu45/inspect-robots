@@ -160,7 +160,7 @@ def test_billing_rejection_is_not_retried(code: str) -> None:
         backoff_s=0,
     )
     try:
-        with pytest.raises(RuntimeError, match="no retry"):
+        with pytest.raises(RuntimeError, match="no automatic retry"):
             client.complete([], [])
         assert len(requests) == 1
     finally:

@@ -9,6 +9,7 @@ provider compatibility endpoints (plan 0008 §4a).
 from __future__ import annotations
 
 import math
+import sys
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ import httpx
 from inspect_robots.errors import ConfigError
 
 from ._capture import WireCapture
+from ._http_errors import nonretryable_reason, retry_notice
 
 ENV_MODEL = "INSPECT_ROBOTS_MODEL"
 
@@ -325,6 +327,12 @@ class ChatClient:
                 if response.status_code == 200:
                     return _parse_message(response.json())
                 last_error = f"HTTP {response.status_code}: {response.text[:500]}"
+                reason = nonretryable_reason(response)
+                if reason is not None:
+                    raise RuntimeError(
+                        f"LLM request rejected: {reason} for {self._provider.model}; "
+                        f"no automatic retry (HTTP {response.status_code})."
+                    )
                 if response.status_code not in (429,) and response.status_code < 500:
                     # A 4xx is our request's fault; retrying cannot help.
                     guidance = ""
@@ -335,7 +343,20 @@ class ChatClient:
                         )
                     raise RuntimeError(f"LLM request rejected — {last_error}{guidance}")
             if attempt + 1 < self._max_retries:
-                time.sleep(_retry_delay(retry_response, backoff_s=self._backoff_s, attempt=attempt))
+                delay = _retry_delay(retry_response, backoff_s=self._backoff_s, attempt=attempt)
+                if retry_response is not None and retry_response.status_code == 429:
+                    print(
+                        retry_notice(
+                            retry_response,
+                            model=self._provider.model,
+                            delay=delay,
+                            next_attempt=attempt + 2,
+                            max_attempts=self._max_retries,
+                        ),
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                time.sleep(delay)
         raise RuntimeError(f"LLM request failed after {self._max_retries} attempts — {last_error}")
 
     def close(self) -> None:

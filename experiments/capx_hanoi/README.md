@@ -231,6 +231,19 @@ is bounded to 400 characters. It appears in execution feedback and, with live
 transcripts enabled, the terminal. The diagnostic does not change the solver
 or supply a target pose or Hanoi transfer strategy.
 
+### LLM retry diagnostics
+
+The shared Chat and Responses clients print one short line before each HTTP
+429 retry wait, including the model, recognized limit details, a readable
+delay, and the next attempt number. This is the scheduled retry time, not a
+promise that all requests will be available then. Explicit credit, spend, and
+organization usage-limit errors stop without waiting or retrying. Notices
+omit raw provider error payloads and do not change temporary-error retry timing.
+
+Wire captures currently retain response bodies, not response headers, so they
+cannot reconstruct historical `Retry-After` or `x-ratelimit-*` values. Notices
+do not provide an account-wide usage history.
+
 ### Live visualization with Rerun
 
 Install the optional viewer once. This does not change the standard runtime

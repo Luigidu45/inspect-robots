@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import time
 from copy import deepcopy
 from typing import Any, cast
@@ -13,6 +14,7 @@ import httpx
 from inspect_robots_agent._llm import AssistantMessage, Provider, ToolCall, _retry_delay
 
 from ._capture import WireCapture
+from ._http_errors import nonretryable_reason, retry_notice
 from ._usage import UsageLedger, normalized_usage
 
 
@@ -155,28 +157,29 @@ class ResponsesClient:
                             self._raw_items_by_call_id[str(item["call_id"])] = output
                     return message
                 last_error = f"HTTP {response.status_code}: {response.text[:500]}"
-                error = (
-                    accounting_payload.get("error")
-                    if isinstance(accounting_payload, dict)
-                    else None
-                )
-                if isinstance(error, dict) and (
-                    error.get("type") == "insufficient_quota"
-                    or error.get("code")
-                    in {
-                        "credit_balance_exhausted",
-                        "organization_spend_limit_exceeded",
-                        "project_spend_limit_exceeded",
-                        "organization_usage_limit_exceeded",
-                    }
-                ):
+                reason = nonretryable_reason(response)
+                if reason is not None:
                     raise RuntimeError(
-                        f"LLM billing or quota rejected request; no retry — {last_error}"
+                        f"LLM request rejected: {reason} for {self._provider.model}; "
+                        f"no automatic retry (HTTP {response.status_code})."
                     )
                 if response.status_code not in (429,) and response.status_code < 500:
                     raise RuntimeError(f"LLM request rejected — {last_error}")
             if attempt + 1 < self._max_retries:
-                time.sleep(_retry_delay(retry_response, backoff_s=self._backoff_s, attempt=attempt))
+                delay = _retry_delay(retry_response, backoff_s=self._backoff_s, attempt=attempt)
+                if retry_response is not None and retry_response.status_code == 429:
+                    print(
+                        retry_notice(
+                            retry_response,
+                            model=self._provider.model,
+                            delay=delay,
+                            next_attempt=attempt + 2,
+                            max_attempts=self._max_retries,
+                        ),
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                time.sleep(delay)
         raise RuntimeError(f"LLM request failed after {self._max_retries} attempts — {last_error}")
 
     def _reset_cache_tracking(self) -> None:
