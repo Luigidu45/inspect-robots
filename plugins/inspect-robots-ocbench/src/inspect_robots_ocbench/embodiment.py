@@ -349,15 +349,30 @@ def ocbench_embodiment() -> OCBenchEmbodiment:
     return OCBenchEmbodiment()
 
 
+# Kept on the registered factory so ``inspect-robots doctor --embodiment ocbench``
+# can diagnose a fresh environment without importing MuJoCo or constructing an
+# environment. The command installs the workspace-locked extra, not an ad-hoc
+# requirements file.
+ocbench_embodiment.RUNTIME_REQUIREMENTS = {  # type: ignore[attr-defined]
+    "ocbench": "uv sync --all-packages --extra ocbench",
+    "pyarrow": "uv sync --all-packages --extra ocbench",
+}
+
+
 class OCBenchHanoiResetEmbodiment(OCBenchEmbodiment):
     """Start from recorded solved episodes and score restoration of the original stack.
 
     Episode actions are replayed privately during ``reset``. The policy sees the
-    resulting scene, the robot proprioception, and RGB reference images captured
-    before replay. It never receives object poses or the demonstration actions.
+    resulting scene and robot proprioception. Goal images captured before replay
+    are optional. The policy never receives object poses or demonstration actions.
     """
 
-    def __init__(self, episode_actions: dict[int, npt.NDArray[np.floating[Any]]]) -> None:
+    def __init__(
+        self,
+        episode_actions: dict[int, npt.NDArray[np.floating[Any]]],
+        *,
+        expose_reference_images: bool = False,
+    ) -> None:
         super().__init__()
         if not episode_actions:
             raise ValueError("episode_actions must contain at least one episode")
@@ -371,6 +386,9 @@ class OCBenchHanoiResetEmbodiment(OCBenchEmbodiment):
             if not np.all(np.isfinite(array)):
                 raise ValueError(f"episode {episode} actions contain non-finite values")
             self._episode_actions[episode] = array.copy()
+        if not isinstance(expose_reference_images, bool):
+            raise ValueError("expose_reference_images must be a bool")
+        self._expose_reference_images = expose_reference_images
         self._reference_images: dict[str, npt.NDArray[np.uint8]] = {}
         self._reset_success = False
         self._restore_streak = 0
@@ -378,10 +396,15 @@ class OCBenchHanoiResetEmbodiment(OCBenchEmbodiment):
             self.info,
             name="ocbench-hanoi-reset",
             docs=(
-                _ROBOT_DOCS + " Restore the three-disk stack on its original middle peg using the "
-                "reference images. The largest disk belongs on the bottom and the "
+                _ROBOT_DOCS + " Restore the three-disk stack on its original middle peg. "
+                "The largest disk belongs on the bottom and the "
                 "smallest on top. Release the disks and leave them stable. The arm "
                 "may finish in any safe pose."
+                + (
+                    " Goal images are included in the observation."
+                    if expose_reference_images
+                    else " No goal image is provided; follow the textual task definition."
+                )
             ),
         )
 
@@ -398,7 +421,7 @@ class OCBenchHanoiResetEmbodiment(OCBenchEmbodiment):
         return False
 
     def reset(self, scene: Scene, *, seed: int | None = None) -> Observation:
-        """Capture the goal, replay one solved episode, then expose the disturbed scene."""
+        """Replay one solved episode, then expose the disturbed reset scene."""
         self._reference_images = {}
         initial = super().reset(scene, seed=seed)
         episode = scene.metadata.get("dataset_episode")
@@ -409,7 +432,8 @@ class OCBenchHanoiResetEmbodiment(OCBenchEmbodiment):
         except KeyError as exc:
             raise ValueError(f"no actions loaded for dataset episode {episode}") from exc
 
-        self._reference_images = {name: image.copy() for name, image in initial.images.items()}
+        if self._expose_reference_images:
+            self._reference_images = {name: image.copy() for name, image in initial.images.items()}
         final_info: dict[str, Any] | None = None
         for target in actions:
             _, _, _, truncated, info = self._env.step(self._normalized_action(target))
@@ -467,7 +491,7 @@ class OCBenchHanoiResetEmbodiment(OCBenchEmbodiment):
         )
 
     def _observe(self) -> Observation:
-        """Attach immutable goal images without exposing simulator object state."""
+        """Optionally attach immutable goal images without exposing object state."""
         observation = super()._observe()
         if not self._reference_images:
             return observation

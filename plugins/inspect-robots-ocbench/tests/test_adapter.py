@@ -24,6 +24,7 @@ from inspect_robots_ocbench.embodiment import (
     DELTA_SCALE,
     REFERENCE_IMAGES_KEY,
     RESET_STABILITY_STEPS,
+    ocbench_embodiment,
 )
 
 
@@ -106,6 +107,14 @@ class FakeEnv:
         return self.illegal_stack
 
 
+def test_registered_embodiment_declares_workspace_runtime_remediation() -> None:
+    """Keep doctor aligned with the locked workspace installation path."""
+    assert ocbench_embodiment.RUNTIME_REQUIREMENTS == {
+        "ocbench": "uv sync --all-packages --extra ocbench",
+        "pyarrow": "uv sync --all-packages --extra ocbench",
+    }
+
+
 @pytest.fixture
 def simulator(monkeypatch: pytest.MonkeyPatch) -> FakeEnv:
     env = FakeEnv()
@@ -185,7 +194,9 @@ def test_invalid_seed_hash_bounds_and_actions_fail_before_execution(simulator: F
 
 def test_reset_embodiment_replays_episode_and_scores_original_stack(simulator: FakeEnv) -> None:
     simulator.reset_replay_behavior = True
-    robot = OCBenchHanoiResetEmbodiment({7: np.zeros((1, 7), dtype=np.float32)})
+    robot = OCBenchHanoiResetEmbodiment(
+        {7: np.zeros((1, 7), dtype=np.float32)}, expose_reference_images=True
+    )
     scene = Scene(
         "reset-7",
         RESET_INSTRUCTION,
@@ -214,6 +225,31 @@ def test_reset_embodiment_replays_episode_and_scores_original_stack(simulator: F
     assert result.terminated and result.termination_reason == "success"
     assert result.info["reset_success"] is True
     assert result.info["source_task_success"] is False
+
+
+def test_text_goal_reset_does_not_expose_reference_images(simulator: FakeEnv) -> None:
+    """Text-goal trials must expose only current RGB and proprioception."""
+    simulator.reset_replay_behavior = True
+    robot = OCBenchHanoiResetEmbodiment({7: np.zeros((1, 7), dtype=np.float32)})
+    observation = robot.reset(
+        Scene(
+            "reset-7",
+            RESET_INSTRUCTION,
+            metadata={"reset_seed": 123, "dataset_episode": 7},
+        )
+    )
+    assert observation.extra == {}
+    assert set(observation.images) == {"front", "side", "wrist"}
+    assert robot.info.docs is not None
+    assert "No goal image is provided" in robot.info.docs
+
+
+def test_reset_embodiment_rejects_non_boolean_reference_mode() -> None:
+    with pytest.raises(ValueError, match="expose_reference_images"):
+        OCBenchHanoiResetEmbodiment(
+            {0: np.zeros((1, 7), dtype=np.float32)},
+            expose_reference_images=1,  # type: ignore[arg-type]
+        )
 
 
 @pytest.mark.parametrize(
@@ -261,6 +297,7 @@ def test_reset_task_joins_split_to_episode_provenance(tmp_path: Path) -> None:
             {
                 "dataset_repo": "owner/dataset",
                 "dataset_revision": "revision",
+                "train": [8],
                 "validation": [7],
                 "test": [9],
             }
@@ -285,7 +322,7 @@ def test_reset_task_joins_split_to_episode_provenance(tmp_path: Path) -> None:
 
     task = hanoi_reset_task(str(split_path), str(ledger_path), num_scenes=1)
 
-    assert task.name == "ocbench-hanoi-triple-task2-reference-reset-30hz"
+    assert task.name == "ocbench-hanoi-triple-task2-text-reset-30hz"
     assert task.scenes[0].instruction == RESET_INSTRUCTION
     assert task.scenes[0].metadata == {
         "reset_seed": 123,
@@ -293,7 +330,17 @@ def test_reset_task_joins_split_to_episode_provenance(tmp_path: Path) -> None:
         "dataset_episode": 7,
     }
     assert [scorer.name for scorer in task.scorers] == ["success_at_end", "episode_length"]
-    assert task.metadata["protocol"] == "capx-hanoi-reference-reset-30hz-v1"
+    assert task.metadata["goal_mode"] == "text"
+    assert task.metadata["protocol"] == "ocbench-hanoi-text-reset-30hz-v1"
+    train = hanoi_reset_task(str(split_path), str(ledger_path), split="train", num_scenes=1)
+    assert train.scenes[0].metadata["dataset_episode"] == 8
+    reference = hanoi_reset_task(
+        str(split_path), str(ledger_path), num_scenes=1, goal_mode="reference"
+    )
+    assert reference.name == "ocbench-hanoi-triple-task2-reference-reset-30hz"
+    assert "reference images" in reference.scenes[0].instruction
+    with pytest.raises(ValueError, match="goal_mode"):
+        hanoi_reset_task(str(split_path), str(ledger_path), goal_mode="unknown")
     with pytest.raises(ValueError, match="missing"):
         hanoi_reset_task(str(split_path), str(ledger_path), split="test", num_scenes=1)
 

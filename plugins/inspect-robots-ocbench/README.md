@@ -2,16 +2,21 @@
 
 This plugin registers the `ocbench` embodiment and the `ocbench-hanoi` and
 `ocbench-hanoi-reset` tasks. It
-implements the frozen Hanoi experiment in `experiments/capx_hanoi/protocol.json`:
+implements the frozen Hanoi experiment in `experiments/capx_hanoi/config/protocol.json`:
 CPU MuJoCo, non-lite `hanoi-triple-task2`, 30 Hz, 20 physics substeps, three
 224 x 224 RGB cameras and seven measured joint positions. It is a custom
 RGB + proprioception experiment. Official OCBench visual tasks use RGB alone.
 
-Install the reviewed OCBench checkout in the same Python environment as this
-plugin. OCBench is imported on the first reset, keeping plugin discovery and
-unit tests independent of MuJoCo. The checkout commit and simulation versions
-are recorded in the experiment protocol; installing an arbitrary OCBench release
-does not establish reproducibility. Use `MUJOCO_GL=egl` for headless rendering.
+Install the plugin's locked `ocbench` extra in the repository workspace:
+
+```bash
+uv sync --all-packages --extra ocbench --python 3.12
+```
+
+It resolves the reviewed upstream OCBench commit, MuJoCo stack and PyArrow from
+`uv.lock`; it is not a manually maintained requirements file. OCBench is
+imported only on the first reset, keeping plugin discovery and unit tests
+independent of MuJoCo. Use `MUJOCO_GL=egl` for headless rendering.
 
 Actions are absolute UR5e positions (six radians, then normalized gripper
 opening: 0 closed, 1 open). The adapter bounds targets using actuator ranges,
@@ -35,8 +40,10 @@ The reset task reconstructs the final state of a recorded successful episode
 by replaying its absolute joint targets with source-task success termination
 disabled. Replay is setup and does not count against the reset agent's step
 budget. The policy starts from that solved outer-peg stack and receives current
-RGB, joint state, and the three RGB frames captured before replay as reference
-images. Demonstration actions and privileged object geometry remain private.
+RGB, joint state, and a textual definition of the canonical middle-peg goal.
+Goal images are disabled by default and can be enabled explicitly for a
+reference-conditioned ablation. Demonstration actions and privileged object
+geometry remain private in both modes.
 
 Reset success uses OCBench's layout-aware tower predicate for the original
 middle peg and requires the gripper to be released for five consecutive control

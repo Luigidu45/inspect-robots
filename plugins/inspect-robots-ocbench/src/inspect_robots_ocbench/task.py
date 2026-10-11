@@ -11,10 +11,19 @@ from inspect_robots.scene import Scene
 from inspect_robots.task import Task
 
 RESET_INSTRUCTION = (
-    "Restore the three disks to the original middle-peg stack shown in the reference "
-    "images using an efficient sequence of safe moves. Place the largest disk on the "
-    "bottom, the medium disk in the middle, and the smallest disk on top. Release the "
-    "disks and leave the stack stable. The robot arm may finish in any safe pose."
+    "Reset the Tower of Hanoi scene to its canonical starting state. Move all three "
+    "disks onto the middle peg as one legal stack: largest disk on the bottom, medium "
+    "disk in the middle, and smallest disk on top. Never place a larger disk on a "
+    "smaller disk. Manipulate only one disk at a time, release the final stack, and "
+    "leave it stable. The robot arm may finish in any safe pose."
+)
+
+REFERENCE_RESET_INSTRUCTION = (
+    "Reset the Tower of Hanoi scene to the goal arrangement shown in the reference "
+    "images. Move all three disks onto the middle peg as one legal stack: largest disk "
+    "on the bottom, medium disk in the middle, and smallest disk on top. Never place a "
+    "larger disk on a smaller disk. Manipulate only one disk at a time, release the "
+    "final stack, and leave it stable. The robot arm may finish in any safe pose."
 )
 
 
@@ -69,10 +78,13 @@ def hanoi_reset_task(
     episode_ledger_path: str,
     split: str = "validation",
     num_scenes: int | None = None,
+    goal_mode: str = "text",
 ) -> Task:
     """Restore recorded solved episodes to their per-episode original stack."""
-    if split not in {"validation", "test"}:
-        raise ValueError("split must be validation or test")
+    if split not in {"train", "validation", "test"}:
+        raise ValueError("split must be train, validation or test")
+    if goal_mode not in {"text", "reference"}:
+        raise ValueError("goal_mode must be text or reference")
     split_bytes = Path(split_manifest_path).read_bytes()
     ledger_bytes = Path(episode_ledger_path).read_bytes()
     split_manifest = json.loads(split_bytes)
@@ -97,7 +109,9 @@ def hanoi_reset_task(
         scenes.append(
             Scene(
                 id=f"{split}-reset-{episode:03d}",
-                instruction=RESET_INSTRUCTION,
+                instruction=(
+                    RESET_INSTRUCTION if goal_mode == "text" else REFERENCE_RESET_INSTRUCTION
+                ),
                 metadata={
                     "reset_seed": row["seed"],
                     "initial_world_sha256": row["initial_world_sha256_reconstructed"],
@@ -106,7 +120,7 @@ def hanoi_reset_task(
             )
         )
     return Task(
-        name="ocbench-hanoi-triple-task2-reference-reset-30hz",
+        name=f"ocbench-hanoi-triple-task2-{goal_mode}-reset-30hz",
         scenes=scenes,
         scorer=["success_at_end", "episode_length"],
         max_steps=7000,
@@ -119,6 +133,7 @@ def hanoi_reset_task(
             "dataset_revision": split_manifest.get("dataset_revision"),
             "split": split,
             "scheduled_scenes": len(scenes),
-            "protocol": "capx-hanoi-reference-reset-30hz-v1",
+            "goal_mode": goal_mode,
+            "protocol": f"ocbench-hanoi-{goal_mode}-reset-30hz-v1",
         },
     )
