@@ -34,6 +34,7 @@ def _build_policy(args: argparse.Namespace, robot: OCBenchHanoiResetEmbodiment) 
         "wire": args.wire,
         "max_llm_calls": args.max_llm_calls,
         "prior_learnings": args.prior_learnings,
+        "transcript_echo": args.live_transcript,
     }
     for name in ("max_output_tokens", "max_cost_usd"):
         value = getattr(args, name, None)
@@ -88,6 +89,27 @@ def _attach_diagnostics(policy: Any, robot: OCBenchHanoiResetEmbodiment) -> None
     policy.on_trial_end = finish
 
 
+def _build_sinks(args: argparse.Namespace) -> list[Any] | None:
+    """Return the optional live viewer plus the canonical JSON log sink.
+
+    Keeping this lazy makes the normal reset path independent of Rerun and its
+    desktop dependencies.  Supplying sinks to ``eval`` replaces its default
+    JSON sink, so the explicit ``JsonLogSink`` is required whenever Rerun is
+    enabled.
+    """
+    if not args.rerun:
+        return None
+    from inspect_robots.logging import JsonLogSink, RerunSink
+
+    viewer_kwargs: dict[str, Any] = {
+        "spawn": True,
+        "recording_dir": args.log_dir,
+    }
+    if args.rerun_port is not None:
+        viewer_kwargs["spawn_port"] = args.rerun_port
+    return [JsonLogSink(args.log_dir), RerunSink(**viewer_kwargs)]
+
+
 def _check_sam3(
     args: argparse.Namespace, *, transport: httpx.BaseTransport | None = None
 ) -> dict[str, Any]:
@@ -133,9 +155,20 @@ def main() -> int:
         help="Native function-calling agent (default) or the optional CaP-X code agent.",
     )
     parser.add_argument("--wire", choices=["chat", "responses"], default="responses")
-    parser.add_argument("--split", choices=["validation", "test"], default="validation")
+    parser.add_argument(
+        "--goal-mode",
+        choices=["text", "reference"],
+        default="text",
+        help="Describe the canonical reset in text (default) or also expose goal images.",
+    )
+    parser.add_argument("--split", choices=["train", "validation", "test"], default="validation")
     parser.add_argument("--num-scenes", type=int)
-    parser.add_argument("--max-llm-calls", type=int, default=8)
+    parser.add_argument(
+        "--max-llm-calls",
+        type=int,
+        default=64,
+        help="Per-trial reasoning/action calls (default: 64; this is not a spend limit).",
+    )
     parser.add_argument("--max-output-tokens", type=int, help="Responses output plus reasoning cap")
     parser.add_argument(
         "--max-cost-usd",
@@ -161,24 +194,40 @@ def main() -> int:
     )
     parser.add_argument(
         "--effort",
-        default="low",
+        default="medium",
         help="Reasoning effort for the selected LLM policy.",
     )
     parser.add_argument(
         "--images",
         choices=["always", "on_demand"],
         default="always",
-        help="Current-camera delivery; reference frames are always sent once.",
+        help="Current-camera delivery; goal frames depend on --goal-mode.",
+    )
+    parser.add_argument(
+        "--live-transcript",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Print observations, usage, tool calls, and results while the rollout runs.",
+    )
+    parser.add_argument(
+        "--rerun",
+        action="store_true",
+        help="Open Rerun with live cameras, robot state, actions, and transcript.",
+    )
+    parser.add_argument(
+        "--rerun-port",
+        type=int,
+        help="Local Rerun viewer port; requires --rerun (default: 9876).",
     )
     parser.add_argument(
         "--split-manifest",
         type=Path,
-        default=experiment / "split_manifest.json",
+        default=experiment / "config" / "split_manifest.json",
     )
     parser.add_argument(
         "--episode-ledger",
         type=Path,
-        default=experiment / "episode_provenance.json",
+        default=experiment / "config" / "episode_provenance.json",
     )
     parser.add_argument(
         "--prior-learnings", help="Optional UTF-8 operating notes without privileged geometry"
@@ -187,6 +236,21 @@ def main() -> int:
     args = parser.parse_args()
     if args.max_output_tokens is not None and args.max_output_tokens < 1:
         parser.error("--max-output-tokens must be positive")
+    if args.max_llm_calls < 1:
+        parser.error("--max-llm-calls must be positive")
+    if args.rerun_port is not None and not args.rerun:
+        parser.error("--rerun-port requires --rerun")
+    if args.rerun_port is not None and not 1 <= args.rerun_port <= 65535:
+        parser.error("--rerun-port must be in [1, 65535]")
+    try:
+        api_endpoint = urlsplit(args.base_url)
+        valid_api_url = api_endpoint.scheme in ("http", "https") and bool(api_endpoint.netloc)
+    except ValueError:
+        valid_api_url = False
+    if not valid_api_url:
+        parser.error("--base-url must be a plain HTTP(S) base URL, not Markdown")
+    if args.model.removeprefix("openai/") == "gpt-6-astra" and args.wire != "responses":
+        parser.error("gpt-6-astra tool calling requires --wire responses")
     if args.max_cost_usd is not None and (
         not np.isfinite(args.max_cost_usd) or args.max_cost_usd <= 0
     ):
@@ -231,12 +295,20 @@ def main() -> int:
         str(args.episode_ledger),
         args.split,
         args.num_scenes,
+        args.goal_mode,
     )
     episode_ids = [int(scene.metadata["dataset_episode"]) for scene in task.scenes]
     episode_actions = load_episode_actions(args.dataset_root, episode_ids)
-    robot = OCBenchHanoiResetEmbodiment(episode_actions)
+    robot = OCBenchHanoiResetEmbodiment(
+        episode_actions,
+        expose_reference_images=args.goal_mode == "reference",
+    )
     policy = _build_policy(args, robot)
     _attach_diagnostics(policy, robot)
+    sinks = _build_sinks(args)
+    if args.rerun:
+        suffix = f" on port {args.rerun_port}" if args.rerun_port is not None else ""
+        print(f"rerun: opening live viewer{suffix} and recording .rrd in {args.log_dir}")
     guard = ChainApprover(
         ClampApprover(robot.info.action_space), DeltaLimitApprover(robot.info.action_space)
     )
@@ -247,6 +319,7 @@ def main() -> int:
             policy,
             robot,
             approver=guard,
+            sinks=sinks,
             log_dir=args.log_dir,
             store_frames=True,
             store_actions=True,
@@ -287,10 +360,14 @@ def main() -> int:
             "max_llm_calls": args.max_llm_calls,
             "effort": args.effort,
             "images": args.images,
+            "live_transcript": args.live_transcript,
+            "rerun": args.rerun,
+            "rerun_port": args.rerun_port,
+            "goal_mode": args.goal_mode,
             "split": args.split,
             "dataset_root": str(args.dataset_root.resolve()),
             "dataset_episodes": episode_ids,
-            "protocol": "ocbench-hanoi-reference-reset-30hz-v1",
+            "protocol": f"ocbench-hanoi-{args.goal_mode}-reset-30hz-v1",
             "task_success": len(successful) == len(task.scenes),
             "llm_calls": sum(report.get("llm_calls", 0) for report in usage_reports),
             "llm_usage": usage_reports,

@@ -152,6 +152,7 @@ activemq-data/
 .envrc
 .venv
 .venv-ocbench/
+.data/
 datasets/ocbench-hanoi-triple-task2/
 env/
 venv/

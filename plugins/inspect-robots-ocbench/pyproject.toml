@@ -2,6 +2,12 @@
 requires = ["hatchling>=1.18"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+# The OCBench simulator is deliberately locked to a reviewed upstream commit,
+# rather than a floating PyPI release. Hatch requires this explicit opt-in for
+# a PEP 508 direct Git reference in an optional runtime extra.
+allow-direct-references = true
+
 [project]
 name = "inspect-robots-ocbench"
 version = "0.1.0"
@@ -12,6 +18,22 @@ license = "MIT"
 dependencies = ["inspect-robots>=0.30", "numpy>=1.24"]
 
 [project.optional-dependencies]
+# This extra is intentionally narrow: it is the simulator plus the Parquet
+# reader needed by the Hanoi reset experiment.  Training and LeRobot are not
+# runtime requirements for an agentic reset of an already-published dataset.
+# Pin the reviewed simulator stack because protocol.json validates these exact
+# versions before an evaluation starts.
+ocbench = [
+    "ocbench @ git+https://github.com/seohongpark/ocbench.git@95e3d4e16756f864b58e32a6a661286288ed3be8",
+    "numpy==2.2.6",
+    "mujoco==3.15.0",
+    "dm-control==1.0.48",
+    "gymnasium==1.4.0",
+    # The frozen dataset reader supports Python 3.11+; the documented
+    # evaluation runtime is Python 3.12. Keep the plugin itself importable on
+    # the core project's broader Python range for discovery and unit tests.
+    "pyarrow==26.0.0; python_version >= '3.11'",
+]
 dev = ["pytest>=8", "pytest-cov>=5", "mypy>=1.11", "ruff>=0.6"]
 
 [project.entry-points."inspect_robots.embodiments"]

@@ -6,10 +6,13 @@
 
 ## 1. Objetivo, alcance y criterio de éxito
 
-El sistema evalúa un agente que debe **restaurar** una escena de OCBench a la
-configuración mostrada en imágenes de referencia. En el caso Hanoi, el agente
-empieza desde el estado final de un episodio exitoso —la torre está fuera de su
-peg original— y debe reconstruir la torre de tres discos en el peg central.
+El sistema evalúa un agente que debe **restaurar** una escena de OCBench a una
+meta definida. El modo predeterminado es `text`: no entrega una imagen objetivo.
+En Hanoi, el agente empieza desde el estado final de un episodio exitoso, con la
+torre fuera de su peg original, y recibe la definición completa de la meta:
+reconstruir una torre legal de tres discos en el peg central. El modo
+`reference` queda como ablación explícita y no se mezcla con los resultados
+textuales.
 
 Esta fase es un experimento de control cerrado, no de aprendizaje:
 
@@ -88,7 +91,7 @@ ni aprende por el hecho de haber hecho un reset.
 | Selección de backend | `run_reset.py:_build_policy()` | Selecciona `agent` nativo o `capx` opcional. |
 | Planificación de escenas | `plugins/inspect-robots-ocbench/.../task.py:hanoi_reset_task()` | Convierte split + provenance ledger en escenas reproducibles. |
 | Lectura de acciones privadas | `experiments/capx_hanoi/reset_data.py:load_episode_actions()` | Lee exclusivamente acciones de episodios requeridos del dataset LeRobot. |
-| Embodiment | `plugins/inspect-robots-ocbench/.../embodiment.py:OCBenchHanoiResetEmbodiment` | Inicializa OCBench, captura la referencia, reproduce la demo privada y ejecuta el reset. |
+| Embodiment | `plugins/inspect-robots-ocbench/.../embodiment.py:OCBenchHanoiResetEmbodiment` | Inicializa OCBench, reproduce la demo privada, expone la observación seleccionada y ejecuta el reset. |
 | Agente nativo | `plugins/inspect-robots-agent/.../policy.py:LLMAgentPolicy` | Traduce observación + herramientas a decisiones LLM y chunks de acción. |
 | Seguridad | `inspect_robots.approver.ChainApprover` | Aplica `ClampApprover` y `DeltaLimitApprover` antes de cada step. |
 | Evaluación y evidencia | `inspect_robots.eval()` | Ejecuta trials, puntúa, persiste frames, acciones, transcript, wire capture y JSON. |
@@ -102,25 +105,27 @@ ni aprende por el hecho de haber hecho un reset.
 | `--api-key-env` | `OPENAI_API_KEY` | Nombre de la variable de entorno; nunca se pasa la clave literal. |
 | `--policy` | `agent` | Baseline nativo o CaP-X opcional. |
 | `--wire` | `responses` | Protocolo de API para el agente nativo. |
-| `--max-llm-calls` | `8` | Presupuesto de decisiones del modelo por trial, no de steps físicos. |
-| `--images` | `always` | Entrega las cámaras actuales en cada decisión; las referencias se adjuntan inicialmente. |
-| `--split`, `--num-scenes` | `validation`, todos | Selección reproducible de episodios de evaluación. |
+| `--goal-mode` | `text` | Usa sólo la meta textual; `reference` añade imágenes objetivo como ablación separada. |
+| `--max-llm-calls` | `64` | Horizonte de decisiones por trial, no límite monetario ni steps físicos. |
+| `--images` | `always` | Entrega las cámaras actuales en cada decisión. |
+| `--live-transcript` | activo | Imprime observaciones, uso, tool calls y resultados durante el rollout. |
+| `--rerun`, `--rerun-port` | desactivado, `9876` | Abre el visor local en vivo y guarda un `.rrd`; requiere el extra opcional `rerun`. |
+| `--split`, `--num-scenes` | `validation`, todos | `train` para producir aprendizajes; `validation` para seleccionar y `test` para el resultado final. |
 
 ## 3. Flujo actual de extremo a extremo
 
 ```mermaid
 flowchart TD
     A[CLI: run_reset.py] --> B[Validar argumentos y construir Task]
-    B --> C[split_manifest.json + episode_provenance.json]
+    B --> C[config/split_manifest.json + config/episode_provenance.json]
     C --> D[Escenas: seed, hash esperado, dataset_episode]
     D --> E[Leer acciones privadas del dataset Parquet]
     E --> F[OCBenchHanoiResetEmbodiment.reset]
     F --> F1[Reset por semilla]
-    F1 --> F2[Capturar RGB objetivo: front/side/wrist]
-    F2 --> F3[Reproducir demo privada hasta estado final]
-    F3 --> G{¿Replay sano y tarea fuente exitosa?}
+    F1 --> F2[Reproducir demo privada hasta estado final]
+    F2 --> G{¿Replay sano y tarea fuente exitosa?}
     G -- no --> X[Trial con error; queda en denominador]
-    G -- sí --> H[Observación pública: RGB actual + joint_pos + RGB referencia]
+    G -- sí --> H[Observación pública: meta textual + RGB actual + joint_pos]
     H --> I[Policy: agent nativo o CaP-X]
     I --> J[ActionChunk de targets articulares]
     J --> K[Clamp + DeltaLimit]
@@ -135,10 +140,10 @@ flowchart TD
 
 | Paso | Objetivo | Entrada | Salida | Validaciones / fallos |
 |---|---|---|---|---|
-| Resolver escenas | Usar únicamente episodios definidos para el split. | `split_manifest.json`, `episode_provenance.json`, `split`, `num_scenes`. | `Scene(id, instruction, metadata)`. | Split inválido, vacío, episodio ausente del ledger o `num_scenes` fuera de rango generan `ValueError`. |
+| Resolver escenas | Usar únicamente episodios definidos para el split. | `config/split_manifest.json`, `config/episode_provenance.json`, `split`, `num_scenes`. | `Scene(id, instruction, metadata)`. | Split inválido, vacío, episodio ausente del ledger o `num_scenes` fuera de rango generan `ValueError`. |
 | Cargar acciones | Obtener el stream privado necesario para la reproducción. | Dataset root y `dataset_episode`. | `float32[N, 7]` ordenado por `frame_index`. | Exige dataset LeRobot, 30 Hz, acción de dimensión 7, Parquet disponible, frames contiguos y valores finitos. Falta `pyarrow` produce `ImportError`. |
 | Reset OCBench | Obtener mundo determinista de la semilla de escena. | `reset_seed`, entorno OCBench congelado. | Mundo, tres RGB de 224×224 y `joint_pos`. | Requiere checkout OCBench; verifica límites articulares y escala de delta del contrato. |
-| Capturar referencia | Guardar objetivo visual antes de perturbar la escena. | RGB tras reset inicial. | Copias inmutables de `front`, `side`, `wrist`. | No se exponen poses ni geometría privilegiada. |
+| Definir objetivo | Proporcionar una condición completa sin geometría privilegiada. | Instrucción del task y `--goal-mode`. | Meta textual; opcionalmente RGB objetivo en la ablación `reference`. | El modo queda registrado en Task, EvalLog y resumen. |
 | Replay privado | Llegar al estado final de la demo. | Targets absolutos `[N,7]`. | Escena inicial del agente. | Rechaza health/failure, truncación, ausencia de éxito fuente o una torre que nunca abandonó el origen. |
 
 ### 3.1.1 Decisión arquitectónica: replay completo frente a "tomar el último estado"
@@ -157,7 +162,7 @@ en el estado final de Hanoi.
 La semántica actual es, por tanto:
 
 ```text
-reset por seed -> capturar objetivo -> aplicar toda la trayectoria privada
+reset por seed -> aplicar toda la trayectoria privada
 -> verificar que terminó en éxito fuente -> entregar ese mundo al agente reset
 ```
 
@@ -189,8 +194,9 @@ validación exista, el replay es el camino más fiable.
 
 1. `eval()` vincula la policy con el espacio de acción y observación del
    embodiment.
-2. La policy recibe RGB actual de tres cámaras, siete joints y las imágenes de
-   referencia; el prompt incluye la instrucción, límites y presupuesto.
+2. La policy recibe RGB actual de tres cámaras y siete joints; el prompt incluye
+   la definición textual del estado objetivo, límites y presupuesto. Sólo el
+   modo `reference` añade imágenes objetivo.
 3. Con `--policy agent`, se construyen herramientas a partir del contrato del
    embodiment: `move_joints`, `done` y `give_up`. CaP-X no se importa en esta
    ruta.
@@ -250,7 +256,7 @@ feedback físico propios.
 | Capa | Condición | Comportamiento actual | Riesgo operativo |
 |---|---|---|---|
 | Credenciales | `OPENAI_API_KEY` no está exportada. | El proveedor responde 401; el trial queda como error. | Configuración de shell inconsistente. |
-| Runtime | `ocbench` no está instalado en el intérprete. | `ImportError` con mensaje dirigido. | Usar `.venv-ocbench`, no un entorno temporal eliminado. |
+| Runtime | `ocbench` o `pyarrow` no está instalado en el intérprete. | `ImportError` con mensaje dirigido; `doctor` lista la remediación. | Ejecutar `uv sync --all-packages --extra ocbench --python 3.12` para crear el `.venv` reproducible. |
 | Dataset | Root incompleto, 30 Hz incorrectos, acción no `[7]`, Parquet inválido. | `ValueError` / `ImportError` antes de evaluar. | Evita ejecutar con un dataset incompatible. |
 | Setup replay | Health malo, truncación o demo sin éxito fuente. | `ValueError`; no se expone una escena inválida al agente. | Puede reducir cobertura si la fuente se degrada. |
 | Tool call | Target inválido/fuera de rango o formato erróneo. | Error estructurado devuelto al LLM; puede corregirse. | Reintentos consumen presupuesto. |
@@ -300,26 +306,26 @@ Hanoi, porque eso invalidaría la generalización a otros resets.
 > Estas mejoras son recomendaciones de arquitectura. No están implementadas en
 > este cambio documental y deben evaluarse en fases con las mismas escenas.
 
-### Prioridad 0 — Corregir observabilidad de la meta
+### Prioridad 0 — Validar el contrato de meta textual
 
-**Problema.** Las imágenes de referencia se adjuntan inicialmente, pero el
-horizonte de imágenes del historial puede eliminarlas de solicitudes posteriores.
-Después de varias decisiones, el proveedor puede conservar cámaras actuales sin
-conservar la configuración objetivo visual.
+**Problema.** Una meta textual incompleta puede hacer imposible distinguir el
+estado final correcto. En Hanoi la meta es inequívoca porque nombra peg, orden,
+liberación y estabilidad; esta propiedad no se puede asumir para otros resets.
 
-**Propuesta.** Anclar las imágenes de referencia fuera de la política de
-evicción o reinyectarlas explícitamente en cada decisión con contabilidad de
-coste. La decisión debe ser configurable y el transcript debe mostrar cuándo
-el agente recibió una referencia.
+**Propuesta.** Exigir que cada task declare una condición textual verificable y
+seleccionar `reference` sólo cuando texto y estado estructurado no determinen una
+configuración única. Si se activa `reference`, sus imágenes deben persistir o
+reinyectarse de forma explícita durante el rollout.
 
-**Criterio de aceptación.** En una prueba de N decisiones, toda solicitud
-posterior conserva o referencia verificablemente las tres imágenes objetivo.
+**Criterio de aceptación.** El EvalLog identifica `goal_mode`; texto y referencia
+se reportan por separado y el scorer privado aplica la misma condición física.
 
 ### Prioridad 1 — Separar smoke test de evaluación de capacidad
 
-**Problema.** Ocho llamadas prueban integración, pero no permiten completar
-una secuencia larga de pick/place con joints. Un fallo a 8 llamadas no mide la
-capacidad real del modelo.
+**Problema.** El ensayo histórico de ocho llamadas sólo probó integración y no
+permitió completar una secuencia larga de pick/place con joints. El runner usa
+ahora 64 llamadas como horizonte predeterminado, pero aún falta formalizar
+perfiles comparables.
 
 **Propuesta.** Definir perfiles de presupuesto, por ejemplo `smoke`,
 `diagnostic` y `benchmark`, versionados junto al manifest. Medir llamadas,
@@ -437,7 +443,7 @@ sobre la distribución de estados que realmente dejará la policy productiva.
 
 ## 9. Checklist previo a cada experimento
 
-- [ ] Se usa `.venv-ocbench` con el commit/versions fijados de OCBench.
+- [ ] Se usa el `.venv` generado con `uv sync --locked --all-packages --extra ocbench`, con el commit/versiones fijados de OCBench.
 - [ ] `OPENAI_API_KEY` está exportada, sin escribir secretos en comandos,
       logs ni repositorio.
 - [ ] Dataset, split manifest y provenance ledger corresponden a la misma

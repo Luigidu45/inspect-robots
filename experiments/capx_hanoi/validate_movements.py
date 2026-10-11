@@ -146,7 +146,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--numeric", type=Path, required=True)
     parser.add_argument(
-        "--ledger", type=Path, default=Path(__file__).with_name("episode_provenance.json")
+        "--ledger",
+        type=Path,
+        default=Path(__file__).with_name("config") / "episode_provenance.json",
     )
     parser.add_argument("--episodes", type=int, nargs="+", default=[0])
     parser.add_argument("--chunk-size", type=int, default=64)

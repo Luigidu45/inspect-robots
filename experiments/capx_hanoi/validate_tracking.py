@@ -18,9 +18,10 @@ from inspect_robots.types import Action
 def measure(dataset_root: Path) -> dict[str, Any]:
     """Compare one-step and repeated targets using identical recorded initial scenes."""
     experiment = Path(__file__).resolve().parent
+    config = experiment / "config"
     task = hanoi_reset_task(
-        str(experiment / "split_manifest.json"),
-        str(experiment / "episode_provenance.json"),
+        str(config / "split_manifest.json"),
+        str(config / "episode_provenance.json"),
         "validation",
         1,
     )

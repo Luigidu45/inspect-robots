@@ -35,7 +35,9 @@ def main() -> int:
     parser.add_argument("--log-dir", default="logs/capx-hanoi")
     args = parser.parse_args()
     task = hanoi_task(
-        str(Path(__file__).with_name("evaluation_scenes.json")), args.split, args.num_scenes
+        str(Path(__file__).with_name("config") / "evaluation_scenes.json"),
+        args.split,
+        args.num_scenes,
     )
     robot = OCBenchEmbodiment()
     policy = CapxPolicy(

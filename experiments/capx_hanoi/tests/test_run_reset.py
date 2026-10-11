@@ -1,4 +1,4 @@
-"""Exercise the reset runner's task wiring, reference images, and summary."""
+"""Exercise the reset runner's textual goal wiring and summary."""
 
 from __future__ import annotations
 
@@ -15,14 +15,15 @@ import pytest
 from inspect_robots_agent import LLMAgentPolicy
 from inspect_robots_ocbench import OCBenchHanoiResetEmbodiment
 
+from inspect_robots.logging import JsonLogSink, RerunSink
 from inspect_robots.scene import Scene
 from inspect_robots.types import Action, Observation, StepResult
 
 
-def test_reset_runner_counts_success_and_sends_reference_images(
+def test_reset_runner_counts_success_without_sending_reference_images(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A successful reset must count once and send goal plus current cameras."""
+    """The default reset must count success and send only current cameras."""
     experiment = Path(__file__).parents[1]
     sys.path.insert(0, str(experiment))
     try:
@@ -64,11 +65,16 @@ def test_reset_runner_counts_success_and_sends_reference_images(
     class World(OCBenchHanoiResetEmbodiment):
         def reset(self, scene: Scene, *, seed: int | None = None) -> Observation:
             image = np.zeros((224, 224, 3), dtype=np.uint8)
+            extra = (
+                {"reference_images": dict.fromkeys(["front", "side", "wrist"], image)}
+                if self._expose_reference_images
+                else {}
+            )
             return Observation(
                 images=dict.fromkeys(["front", "side", "wrist"], image),
                 state={"joint_pos": np.array([0, 0, 0, 0, 0, 0, 0.5])},
                 instruction=scene.instruction,
-                extra={"reference_images": dict.fromkeys(["front", "side", "wrist"], image)},
+                extra=extra,
             )
 
         def step(self, action: Action) -> StepResult:
@@ -124,10 +130,13 @@ def test_reset_runner_counts_success_and_sends_reference_images(
     assert summary["success_rate_all_scheduled"] == 1
     assert summary["mean_agent_steps_on_success"] == 1
     assert summary["policy"] == "agent"
-    assert summary["max_llm_calls"] == 8
+    assert summary["max_llm_calls"] == 64
+    assert summary["goal_mode"] == "text"
+    assert summary["protocol"] == "ocbench-hanoi-text-reset-30hz-v1"
+    assert summary["rerun"] is False and summary["rerun_port"] is None
     contents = requests[0]["input"][-1]["content"]
-    assert sum(part["type"] == "input_image" for part in contents) == 6
-    assert "Reference goal images" in json.dumps(contents)
+    assert sum(part["type"] == "input_image" for part in contents) == 3
+    assert "Reference goal images" not in json.dumps(contents)
     assert {tool["name"] for tool in requests[0]["tools"]} == {
         "move_joints",
         "done",
@@ -190,6 +199,7 @@ def test_real_policy_factory_uses_same_astra_settings(
         prior_learnings=None,
         effort="low",
         images="always",
+        live_transcript=True,
         sam3_url="http://sam3.test:8114" if assistance == "sam3_ik" else None,
         sam3_timeout_s=30.0,
     )
@@ -200,6 +210,7 @@ def test_real_policy_factory_uses_same_astra_settings(
         assert captured["wire"] == "responses"
         assert captured["effort"] == "low"
         assert captured["max_llm_calls"] == 8
+        assert captured["transcript_echo"] is True
         if backend == "agent":
             assert "assistance" not in captured and "ik_solver" not in captured
             assert captured["images"] == "always" and captured["depth"] == "off"
@@ -218,6 +229,28 @@ def test_real_policy_factory_uses_same_astra_settings(
         robot.close()
 
 
+def test_rerun_sink_keeps_the_canonical_json_log(runner: Any, tmp_path: Path) -> None:
+    """Live visualization must not replace the persistent EvalLog."""
+    sinks = runner._build_sinks(
+        argparse.Namespace(rerun=True, rerun_port=9988, log_dir=str(tmp_path))
+    )
+    assert sinks is not None
+    assert isinstance(sinks[0], JsonLogSink)
+    assert isinstance(sinks[1], RerunSink)
+    assert sinks[0].log_dir == tmp_path
+    assert sinks[1].spawn is True
+    assert sinks[1].recording_dir == str(tmp_path)
+    assert sinks[1].spawn_port == 9988
+
+
+def test_no_rerun_returns_default_json_sink(runner: Any, tmp_path: Path) -> None:
+    """The regular runtime must stay independent of optional Rerun packages."""
+    assert (
+        runner._build_sinks(argparse.Namespace(rerun=False, rerun_port=None, log_dir=str(tmp_path)))
+        is None
+    )
+
+
 @pytest.mark.parametrize(
     ("options", "message"),
     [
@@ -234,7 +267,15 @@ def test_real_policy_factory_uses_same_astra_settings(
         (["--max-output-tokens", "0"], "must be positive"),
         (["--max-cost-usd", "nan"], "finite and positive"),
         (["--max-cost-usd", "1", "--model", "unknown"], "known gpt-6-astra pricing"),
-        (["--max-output-tokens", "100", "--wire", "chat"], "require --wire responses"),
+        (
+            ["--max-output-tokens", "100", "--wire", "chat"],
+            "gpt-6-astra tool calling requires",
+        ),
+        (["--wire", "chat"], "gpt-6-astra tool calling requires"),
+        (["--max-llm-calls", "0"], "must be positive"),
+        (["--base-url", "[https://api.openai.com/v1](https://api.openai.com/v1)"], "plain HTTP"),
+        (["--rerun-port", "9988"], "requires --rerun"),
+        (["--rerun", "--rerun-port", "0"], "must be in [1, 65535]"),
         (["--policy", "agent", "--capx-max-queued-steps", "90"], "requires --policy capx"),
         (["--policy", "capx", "--capx-max-queued-steps", "0"], "positive value"),
     ],

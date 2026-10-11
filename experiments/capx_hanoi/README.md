@@ -1,146 +1,100 @@
-# Experimento: CaP-X en Hanoi con RGB y propiocepción
+# OCBench Hanoi reset experiment
 
-La fase 1 valida el dataset y fija el protocolo. La fase 2 implementa el
-adaptador OCBench y comprueba la ejecución de movimientos mediante CaP-X. La
-fase 3 implementa la evaluación del agente restaurando estados finales de las
-demostraciones. El entrenamiento de un modelo sigue fuera de este experimento.
+This experiment evaluates an Inspect Robots agent that restores a solved
+three-disk OCBench Hanoi scene to its original stack on the middle peg. It is
+agentic closed-loop control, not an online-RL trainer and not a dataset
+generator.
 
-## Dataset y fuentes:
+## Runtime flow
 
-Dataset: [NONHUMAN-RESEARCH/ocbench-hanoi-triple-task2](https://huggingface.co/datasets/NONHUMAN-RESEARCH/ocbench-hanoi-triple-task2).
-Revisión fijada: `c5f40db6f68a71147bef8224273dfeeb9d06bd81`.
-Contiene 225 episodios, 933889 registros y tres vídeos RGB de 224 x 224 por
-instante, distribuidos en once archivos MP4. La exportación es LeRobot v3.
-
-El generador revisado es
-`/home/luigidu/ocbench_leonardo/ocbench/scripts/generate_hanoi_lerobot.py`,
-en el commit `95e3d4e16756f864b58e32a6a661286288ed3be8`. Su SHA-256 y las
-versiones del entorno están en [protocol.json](protocol.json).
-Los 89 archivos Python y XML de `ocbench/` coinciden con el checkout
-`/home/luigidu/murobotics_ws/ocbench`, commit
-`e2cd2f72110b66bd65afab1b855d81ebc73aeacc`.
-
-La documentación específica del exportador está en
-`/home/luigidu/ocbench_leonardo/ocbench/scripts/README.md`.
-`/home/luigidu/murobotics_ws/ocbench/experiments/README.md` explica las
-variantes CPU, lite y visual, pero su experimento BC/FBC corresponde a Block.
-
-## Contrato de observaciones y acciones:
-
-El modelo recibe `front`, `side`, `wrist` y siete posiciones del robot:
-seis articulaciones en radianes y la apertura normalizada de la pinza.
-La convención de pinza es 0 cerrada y 1 abierta.
-No recibe poses privilegiadas de objetos o postes, estado del oracle,
-recompensas, flags de éxito ni observaciones futuras.
-
-El exportador lee estado y RGB antes de ejecutar la acción. La acción guardada
-es el objetivo del actuador, no la posición medida después del paso. Los
-campos `next.reward`, `next.done` y `next.success` describen el resultado de
-ese paso.
-
-Para un objetivo `target` y la posición medida actual `current`, la conversión
-de vuelta al entorno es:
-
-```python
-scale = np.array([0.18, 0.18, 0.18, 0.36, 0.36, 0.36, 0.12])
-env_action = np.clip((target - current) / scale, -1.0, 1.0)
-observation, reward, terminated, truncated, info = env.step(env_action)
+```text
+LeRobot demonstration already on disk
+  -> reset OCBench at the matching initial scene
+  -> privately replay the demonstration to its solved final state
+  -> agent receives a complete textual goal, current RGB, and joint positions
+  -> guarded 30 Hz joint actions restore the middle-peg stack
+  -> Inspect EvalLog stores frames, actions, transcript, and verdict
 ```
 
-Los límites absolutos del brazo deben venir de `actuator_ctrlrange`, nunca
-de los mínimos y máximos de las demostraciones.
+The replay only prepares the starting state: its actions, object poses,
+rewards, and success signals are never shown to the policy. The agent does not
+update weights during a rollout. `--prior-learnings`, when supplied, is static
+text from an earlier development run, not online learning.
 
-## Variante experimental:
+## Layout
 
-El usuario eligió RGB + propiocepción. Esta combinación no es el protocolo
-oficial de observaciones exclusivamente visuales de OCBench.
+```text
+capx_hanoi/
+  config/                         # versioned runtime manifests
+    protocol.json                 # portable experiment contract
+    split_manifest.json           # train/validation/test episode IDs
+    episode_provenance.json       # reconstructed reset seed per episode
+    evaluation_scenes.json        # fresh scenes for the non-reset baseline
+  run_reset.py                    # primary reset entry point
+  reset_data.py                   # read source actions from Parquet
+  check_environment.py            # local preflight; no LLM request
+  validate_tracking.py            # deterministic 30 Hz tracking check
+  validate.py                     # optional dataset audit; writes elsewhere
+  validate_assistance.py          # optional CaP-X assistance check
+  validate_movements.py           # optional scripted CaP-X motion check
+  tests/                          # runner tests
+```
 
-| Propiedad | Protocolo fijado |
-| --- | --- |
-| Task | `hanoi-triple-task2`, sin lite |
-| Backend inicial | CPU MuJoCo |
-| Entorno del generador | `hanoi-cpu-triple-task2-v0` |
-| Referencia visual registrada | `visual-hanoi-cpu-triple-task2-v0` |
-| Control y vídeos | 30 Hz |
-| Integración física | 20 subpasos, 1/600 s por subpaso |
-| Horizonte | 7000 acciones, 233.333333 s simulados |
-| Inicio | Tres discos en el poste central, layout aleatorio |
-| Objetivo | Torre legal completa en cualquiera de los dos postes exteriores |
-| Veredicto | Éxito oficial, saludable y sin fallo |
+Audit results and run results are generated artifacts. Write them under
+`logs/` or `/tmp`, not in this source directory.
 
-El generador cambia los valores predeterminados de OCBench: control a 50 Hz
-e integración física a 0.002 s. Los resultados de este protocolo deben
-identificarse como variante adaptada al dataset, sin presentarlos como una
-reproducción directa de las tablas oficiales. El tiempo de inferencia del LLM
-no es tiempo físico simulado; debe medirse por separado.
+## Inputs and provenance
 
-## Evidencia de validación:
+The source dataset is
+[`NONHUMAN-RESEARCH/ocbench-hanoi-triple-task2`](https://huggingface.co/datasets/NONHUMAN-RESEARCH/ocbench-hanoi-triple-task2),
+revision `c5f40db6f68a71147bef8224273dfeeb9d06bd81`. The reset runner needs
+only `meta/**` and `data/**`; it renders current observations in MuJoCo and
+does not need the MP4 videos. The default `--goal-mode text` does not expose a
+goal image. `--goal-mode reference` remains available as a controlled ablation.
 
-[validation_summary.json](validation_summary.json) resume el alcance y las
-comprobaciones realizadas, incluido el comando completo del auditor.
+[`config/protocol.json`](config/protocol.json) records the upstream OCBench
+repository, reviewed generator commit and script hash, dependency versions,
+control semantics, and evaluation contract. It contains no machine-local
+paths. `config/episode_provenance.json` is reconstructed metadata used to reset
+the matching scene; it is not a data generator and it does not expose layout
+or object poses to the agent.
 
-- [numeric_validation.json](numeric_validation.json): todos los registros,
-  índices, límites de incremento, aperturas, timestamps y finales de episodio
-  pasaron. Hay exactamente un `done` y un `success` final en cada episodio.
-- [actuator_validation.json](actuator_validation.json): 103 casos comparan el
-  objetivo del exportador con los comandos reales de MuJoCo. Error máximo
-  `1.1707160707530306e-07`.
-- [episode_provenance.json](episode_provenance.json): 225 semillas candidatas
-  reconstruidas, con coincidencia exacta de propiocepción inicial. Hay 225
-  layouts reconstruidos diferentes.
-- [replay.json](replay.json): reproducción completa de los episodios
-  0, 56, 112, 168 y 224. Los cinco terminan con éxito, saludables, sin fallo
-  ni truncación y con la misma longitud que sus demostraciones.
-- [video_probe.json](video_probe.json): cabeceras y primer frame de los once
-  MP4. Cada cámara declara en total 933889 frames, H.264 y 30 fps.
-- [initial_rgb_alignment.json](initial_rgb_alignment.json): nueve frames de
-  los episodios 0, 112 y 224 comparados con renders de las escenas
-  reconstruidas. Los timestamps coinciden; el PSNR es 39.29 a 43.67 dB,
-  compatible con las diferencias de compresión H.264 observadas.
+The environment is `hanoi-cpu-triple-task2-v0`, with 30 Hz control, 600 Hz
+physics, three 224x224 RGB cameras, six arm joint positions, and normalized
+gripper opening. This RGB-plus-proprioception protocol matches the dataset; it
+is not the standard pixel-only OCBench protocol.
 
-El generador no persiste la semilla aceptada ni el orden de jobs. Con varios
-workers, el orden LeRobot corresponde al orden de terminación y no al índice
-original del job. La reconstrucción usa la hipótesis de semilla raíz 0 y los
-reintentos del generador; las coincidencias de estado, los nueve frames y las
-cinco reproducciones son la evidencia disponible. No sustituye un manifiesto
-original de generación. Las futuras recolecciones deben guardar los argumentos,
-commit, versiones, job, semilla aceptada, intento y estado inicial completos.
+## Setup
 
-El 225/225 de éxitos del dataset describe demostraciones seleccionadas.
-No es una medida del rendimiento en episodios nuevos. No se reprodujeron
-completamente los 225 episodios ni se decodificaron todos los frames de video.
+From the `inspect-robots` repository root, create the Python 3.12 workspace environment
+with `uv`. The `ocbench` extra belongs to the OCBench plugin and pins the
+reviewed upstream commit plus the simulator/Parquet versions in the protocol.
+`uv.lock` is the complete reproducible resolution; there is deliberately no
+`requirements-reset.txt` or hand-installed editable dependency list.
 
-## Divisiones y evaluación:
+```bash
+uv sync --all-packages --extra ocbench --python 3.12
+```
 
-[split_manifest.json](split_manifest.json) fija 180 episodios de entrenamiento,
-22 de validación y 23 de prueba, con semilla de partición `20261009`.
-Se separan episodios completos y sus layouts reconstruidos. Todas las ventanas
-o programas derivados de un episodio deben conservar su división.
+After cloning a revision that already includes `uv.lock`, use the locked form:
 
-[evaluation_scenes.json](evaluation_scenes.json) fija además 50 escenas nuevas
-de validación y 100 de prueba en simulación, con semillas y hashes del estado
-inicial. Sus semillas y layouts no coinciden con los reconstruidos del dataset
-ni entre los dos conjuntos nuevos. Los 23 episodios offline de prueba y las
-100 escenas nuevas del simulador tienen funciones distintas.
+```bash
+uv sync --locked --all-packages --extra ocbench
+```
 
-El futuro adaptador debe usar exactamente la semilla de reset del manifiesto
-y comprobar su hash inicial. La semilla derivada por el framework para un
-trial se registra aparte; no debe sustituir silenciosamente ese reset fijado.
+This produces the repository-standard `.venv/`. It includes the native
+`agent` and OCBench plugins as editable workspace packages. CaP-X is present
+only as another plugin; it is not imported when `--policy agent` is selected.
+Headless EGL still requires a working host GPU/EGL driver, which Python package
+management cannot supply.
 
-La prueba final ejecutará el modelo base y el ajustado sobre las mismas 100
-escenas, sin filtrar fallos ni reintentar hasta conseguir éxito. La métrica
-principal será éxitos divididos entre las 100 escenas programadas; los errores
-de ejecución de la policy cuentan como intentos fallidos y se informan aparte.
-Las métricas internas condicionadas a trials sin error de `inspect-robots`
-no deben reemplazar ese denominador. `FINISH` no constituye un veredicto de
-éxito.
+Download the numeric dataset snapshot once. It is deliberately outside the
+environment and outside Git: a virtual environment can be recreated and the
+dataset is an immutable external input. `.data/` is the repository convention;
+another absolute path is equally valid if passed through `--dataset-root`.
 
-## Repetir la auditoría:
-
-Descargar los metadatos y Parquet de la revisión fijada. Por ejemplo, con
-el entorno de OCBench que contiene `huggingface_hub`:
-
-```python
+```bash
+.venv/bin/python - <<'PY'
 from huggingface_hub import snapshot_download
 
 snapshot_download(
@@ -148,540 +102,141 @@ snapshot_download(
     repo_type="dataset",
     revision="c5f40db6f68a71147bef8224273dfeeb9d06bd81",
     allow_patterns=["meta/**", "data/**"],
-    local_dir="/tmp/capx-hanoi-snapshot",
-)
-```
-
-Desde la raíz de Inspect Robots, usando el entorno del generador:
-
-```bash
-env -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
-  /home/luigidu/ocbench_leonardo/ocbench/.venv/bin/python -B \
-  experiments/capx_hanoi/validate.py \
-  --dataset-root /tmp/capx-hanoi-snapshot \
-  --ocbench-root /home/luigidu/ocbench_leonardo/ocbench \
-  --output-dir /tmp/capx-hanoi-revalidation \
-  --probe-videos
-```
-
-La entrada permanece intacta. El sondeo de vídeos consulta MP4 remotos
-de la revisión fijada; necesita red y PyAV. Los datos numéricos y la
-simulación se validan localmente. La auditoría inicial usó el entorno con
-las versiones guardadas en `protocol.json`.
-
-## Siguiente fase:
-
-Implementar el adaptador OCBench y comprobar el control a través de CaP-X.
-La interpolación de `MotionQueue`, la cadencia y la apertura continua de la
-pinza necesitan pruebas propias. Esta fase no incluye etiquetas Python,
-entrenamiento, despliegue en Modal ni resultados de un modelo aprendido.
-
-## Fase 2: adaptador y ejecución CaP-X:
-
-El plugin [inspect-robots-ocbench](../../plugins/inspect-robots-ocbench/README.md)
-registra el embodiment `ocbench` y la task `ocbench-hanoi`. Implementa el
-protocolo anterior sin modificar el core. Comprueba los límites UR5e, la escala
-de deltas y el hash del mundo inicial. La semilla del manifiesto controla el
-reset; la semilla derivada por el framework queda registrada por separado.
-La geometría privilegiada del manifiesto no se copia al `Scene` entregado a
-la política.
-
-CaP-X tiene integrado el cliente del LLM y su conversación con el ejecutor,
-pero no incluye un modelo ni pesos entrenables. Solo requiere un LLM externo
-capaz de interpretar imágenes y producir Python. El ciclo es:
-
-```text
-RGB + joint_pos + instrucción
-  -> LLM configurado: genera Python
-  -> CaP-X: ejecuta Python y construye ActionChunk
-  -> guardrails -> adaptador OCBench -> simulación
-  -> nuevas observaciones + feedback de ejecución -> LLM
-```
-
-`camera="front"` selecciona la cámara para SAM3. El mensaje visual del LLM
-incluye las tres cámaras disponibles. Los servidores SAM3, Contact-GraspNet y
-Pyroki no son otros LLM supervisores. Solo se llaman cuando el Python utiliza
-sus helpers. Este protocolo no entrega profundidad ni extrínsecos calibrados,
-por lo que `plan_grasp` no dispone de sus entradas necesarias. La validación
-de movimientos usa objetivos articulares y no llama a esos servidores.
-
-Se añadió `move_to_configuration([j0, j1, j2, j3, j4, j5, opening])` a CaP-X.
-Permite mover simultáneamente el brazo y la pinza, conservando aperturas
-intermedias y los límites de interpolación. `move_to_joints`, `open_gripper` y
-`close_gripper` siguen disponibles.
-
-[validate_movements.py](validate_movements.py) devuelve código pregrabado por
-`httpx.MockTransport` y lo procesa con `CapxPolicy` real. Ejecuta los helpers,
-los guardrails de bounds y delta, la conversión de acciones y la física de
-OCBench. Los bloques predeterminados contienen 64 objetivos y se renderizan
-las tres cámaras antes de cada nueva llamada. Dentro de cada bloque se reutiliza
-RGB, mientras el estado y la física se actualizan en cada paso. Este ahorro de
-renderizado se limita al validador. La evaluación de un modelo real utiliza
-el adaptador normal.
-
-[phase2_summary.json](phase2_summary.json) resume la validación. Los cinco
-episodios probados completaron Hanoi, con 16940 pasos y 265 llamadas al
-modelo simulado. Ningún guardrail modificó una acción. La interpolación
-añadió 100 pasos respecto a las demostraciones originales.
-
-| Episodio | Pasos originales | Pasos CaP-X | Llamadas simuladas | Resultado |
-| --- | --- | --- | --- | --- |
-| 0 | 3058 | 3079 | 48 | Éxito |
-| 56 | 4408 | 4437 | 69 | Éxito |
-| 112 | 2856 | 2870 | 45 | Éxito |
-| 168 | 3273 | 3289 | 52 | Éxito |
-| 224 | 3245 | 3265 | 51 | Éxito |
-
-Los resultados individuales están en
-[movement_validation_chunk64.json](movement_validation_chunk64.json).
-[movement_validation.json](movement_validation.json) registra adicionalmente
-el episodio 0 como un solo bloque de 3058 objetivos, también exitoso.
-
-La reproducción no mide percepción, razonamiento ni generalización del LLM.
-Los objetivos proceden de episodios conocidos. Su éxito demuestra que el
-camino de ejecución admite completar la task. Las escenas nuevas del
-manifiesto siguen reservadas para evaluar el modelo.
-
-## Preparar el entorno de simulación:
-
-El entorno `/tmp/capx-hanoi-env` quedó instalado y probado: se verificó el
-reset de `validation-000` y se repitió el episodio 0 con éxito, registrado en
-[isolated_runtime_validation.json](isolated_runtime_validation.json). Las
-versiones usadas están en `phase2_summary.json`. `/tmp` es temporal; los
-comandos siguientes permiten recrearlo.
-
-Conviene usar un entorno separado del workspace para mantener las versiones
-de física y NumPy del protocolo. Ejecutar desde la raíz de `inspect-robots`:
-
-```bash
-uv venv --python 3.12 /tmp/capx-hanoi-env
-uv pip install --python /tmp/capx-hanoi-env/bin/python \
-  numpy==2.2.6 mujoco==3.15.0 dm-control==1.0.48 gymnasium==1.4.0 \
-  -e /home/luigidu/ocbench_leonardo/ocbench \
-  -e . -e plugins/inspect-robots-agent \
-  -e plugins/inspect-robots-capx -e plugins/inspect-robots-ocbench
-```
-
-Antes de instalar, verificar que el checkout OCBench corresponde al commit
-fijado en `protocol.json`. Para desarrollo del plugin sin simulación:
-`uv sync --locked --all-packages --extra dev`.
-
-El archivo numérico de la auditoría anterior está en
-`/tmp/capx-hanoi-audit/numeric.npz`; no está incluido en Git y `/tmp` no es
-almacenamiento permanente. Puede regenerarse con el auditor de la fase 1.
-
-```bash
-env -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
-  /tmp/capx-hanoi-env/bin/python experiments/capx_hanoi/validate_movements.py \
-  --numeric /tmp/capx-hanoi-audit/numeric.npz \
-  --episodes 0 56 112 168 224 --chunk-size 64 \
-  --output /tmp/capx-hanoi-movement-check.json
-```
-
-## Evaluar el modelo configurado:
-
-[run.py](run.py) evalúa escenas nuevas con guardrails, guarda imágenes y
-transcripciones, y escribe un resumen junto a los logs. La métrica principal
-es éxitos divididos entre todas las escenas programadas, incluyendo errores.
-`evaluation_status="success"` solo indica que la evaluación terminó sin error;
-la resolución de Hanoi se mide con `success_rate_all_scheduled`.
-
-El endpoint puede estar desplegado en Modal o ser una API de proveedor. Usar
-el identificador exacto que acepte ese endpoint. Los nombres de modelos que
-aparecen en Codex no establecen sus identificadores ni disponibilidad en una
-API pública. La clave se configura en el entorno; `--api-key-env` recibe el
-nombre de la variable, nunca la clave.
-
-```bash
-env -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
-  /tmp/capx-hanoi-env/bin/python experiments/capx_hanoi/run.py \
-  --model "$CAPX_MODEL" --base-url "$CAPX_BASE_URL" \
-  --api-key-env CAPX_API_KEY --wire chat \
-  --split validation --num-scenes 1 --log-dir logs/capx-hanoi-baseline
-```
-
-El modelo debe aceptar imágenes y generar código. Cambiar `--wire` a
-`responses` o `anthropic` cuando corresponda al endpoint configurado. Primero
-usar validación para ajustar la política; reservar `--split test` para comparar
-el modelo base y el ajustado con las mismas 100 escenas.
-
-## Fase 3: reset agentico desde episodios resueltos:
-
-[run_reset.py](run_reset.py) ejecuta el protocolo de reset sin una VLA. El
-backend se elige explícitamente con `--policy`: `agent` es el agente nativo y
-predeterminado; `capx` conserva el baseline opcional de código generado. Para
-cada escena seleccionada de `split_manifest.json`:
-
-```text
-reset OCBench con la semilla reconstruida
-  -> capturar front, side y wrist como referencia privada del objetivo
-  -> reproducir todas las acciones del episodio hasta su Hanoi resuelto
-  -> reiniciar únicamente el contador de pasos del agente
-  -> entregar referencia + RGB actual + joint_pos a la política seleccionada
-  -> evaluar después de cada acción la torre en el poste inicial
-```
-
-La reproducción prepara el estado inicial de la evaluación. Sus acciones no
-llegan al LLM y sus pasos no se mezclan con `episode_length`. OCBench se crea
-con `terminate_at_success=False`, por lo que alcanzar el objetivo de la tarea
-original no reinicia el entorno. El criterio de reset usa el poste inicial del
-layout aleatorio, exige los tres discos en orden, la pinza liberada y cinco
-pasos de control consecutivos en esa condición. No exige que el brazo copie su
-pose de la imagen de referencia.
-
-El hash bitwise del mundo inicial se conserva en la provenance, junto con
-`initial_world_hash_matches`. En el reset es diagnóstico y no bloqueante:
-componentes internos float64 de MuJoCo e IK pueden variar entre runtimes aunque
-la propiocepción exportada y el layout coincidan. El gate bloqueante es más
-directo para este protocolo: reproducir todas las acciones debe mantenerse
-saludable y terminar en éxito oficial de OCBench. La task normal de Hanoi
-conserva su comprobación estricta del hash.
-
-[reset_setup_smoke.json](reset_setup_smoke.json) registra una comprobación con
-OCBench real del primer episodio de validación: el episodio 2 reprodujo sus
-4303 acciones, terminó resuelto y saludable, dejó el objetivo de reset aún
-pendiente y produjo las tres referencias visuales. Esta prueba no hizo ninguna
-petición a un LLM.
-
-La instrucción enviada al modelo es positiva y especifica el resultado:
-
-> Restore the three disks to the original middle-peg stack shown in the
-> reference images using an efficient sequence of safe moves. Place the largest
-> disk on the bottom, the medium disk in the middle, and the smallest disk on
-> top. Release the disks and leave the stack stable. The robot arm may finish
-> in any safe pose.
-
-Esto sigue el patrón de tareas de manipulación de describir directamente el
-estado objetivo. El veredicto no depende del texto ni de `FINISH`; lo calcula
-el simulador con estado privilegiado que nunca se incorpora a la observación.
-
-Tanto `agent` como `capx` envían las imágenes de referencia sólo en la primera
-llamada del trial, claramente separadas de las cámaras actuales. Después
-permanecen en el historial del modelo. Para `agent`, el conjunto nativo de
-herramientas se deriva del action space: en esta variante joint-space son
-`move_joints`, `done` y `give_up` (más `take_pic` si se selecciona
-`--images on_demand`). CaP-X no se importa ni necesita servidores cuando se
-usa `--policy agent`. Los logs guardan frames, acciones, transcripción, éxito y
-longitud del intento.
-
-### Preparar los datos:
-
-Sólo hacen falta `meta/**` y `data/**`, no los vídeos. Mantener la revisión
-fijada:
-
-```bash
-/tmp/capx-hanoi-env/bin/python - <<'PY'
-from huggingface_hub import snapshot_download
-
-snapshot_download(
-    repo_id="NONHUMAN-RESEARCH/ocbench-hanoi-triple-task2",
-    repo_type="dataset",
-    revision="c5f40db6f68a71147bef8224273dfeeb9d06bd81",
-    allow_patterns=["meta/**", "data/**"],
-    local_dir="/tmp/capx-hanoi-snapshot",
+    local_dir=".data/ocbench-hanoi-triple-task2",
 )
 PY
 ```
 
-El entorno de ejecución necesita `pyarrow` para seleccionar las acciones de los
-episodios. Si no está instalado:
+Confirm a fresh environment before a rollout. The native Inspect Robots doctor
+reports the same `uv sync` remediation if OCBench or PyArrow is absent:
 
 ```bash
-uv pip install --python /tmp/capx-hanoi-env/bin/python pyarrow huggingface-hub
+.venv/bin/inspect-robots doctor --embodiment ocbench
 ```
 
-### Entorno local preparado y comprobación de disponibilidad:
+## Native-agent baseline
 
-El runtime permanente es `.venv-ocbench` y los datos numéricos completos están
-en `datasets/ocbench-hanoi-triple-task2`, ambos ignorados por Git. El Parquet
-corresponde a la revisión fijada y tiene SHA-256
-`496ab4db6aa3b84a3af04d1da3ee1622cdcd9f281e857533cfc9c91c5a688811`.
-Las referencias visuales se renderizan en MuJoCo; no se necesitan vídeos.
-El dataset original incompleto de otra ruta permanece intacto.
-
-[requirements-reset.txt](requirements-reset.txt) fija las dependencias del
-runtime probado. Para recrearlo en esta máquina desde la raíz del repositorio:
-
-```bash
-uv venv --python 3.12 .venv-ocbench
-uv pip install --python .venv-ocbench/bin/python \
-  -r experiments/capx_hanoi/requirements-reset.txt \
-  -e /home/luigidu/ocbench_leonardo/ocbench \
-  -e . -e plugins/inspect-robots-agent \
-  -e plugins/inspect-robots-capx -e plugins/inspect-robots-ocbench
-```
-
-En otra máquina, cambiar la ruta de OCBench por el checkout indicado en
-`protocol.json` y descargar `meta/**` y `data/**` de la revisión fijada. No
-mezclar `.venv` de desarrollo con `.venv-ocbench`. Los comandos eliminan
-`PYTHONPATH` y deshabilitan paquetes del usuario para evitar contaminación ROS.
-
-[check_environment.py](check_environment.py) comprueba versiones, entry points,
-los 45 episodios numéricos de validación y prueba, preparación real del primer
-reset, cámaras, 30/600 Hz, IK y construcción de las
-cuatro políticas sin hacer peticiones al LLM:
+First verify that the installed native-agent path can prepare a real reset
+scene; it does not make an LLM request. Exit code `2` means only that the API
+key is not configured yet.
 
 ```bash
 env -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
-  .venv-ocbench/bin/python experiments/capx_hanoi/check_environment.py \
-  --dataset-root datasets/ocbench-hanoi-triple-task2 \
-  --output logs/reset-environment.json
+  .venv/bin/python experiments/capx_hanoi/check_environment.py \
+  --dataset-root .data/ocbench-hanoi-triple-task2 \
+  --output logs/audit/hanoi-native-preflight.json
 ```
 
-El código de salida es 0 si las comprobaciones y configuración externa están
-listas, 2 si las comprobaciones locales pasan pero falta la variable de API o
-la URL SAM3, y 1 si falla una comprobación. Añadir `--sam3-url "$SAM3_URL"` cuando
-esté disponible para probar el servicio real. El informe nunca guarda claves
-ni afirma haber evaluado Astra o el reset autónomo. `agent`, `none` e `ik`
-pueden ejecutarse sin SAM3 una vez configurada su API de LLM. Para este
-protocolo usar `run_reset.py`: el embodiment `ocbench` del CLI genérico ejecuta
-la tarea original y por sí solo no prepara el reset desde una demostración.
-
-### Configurar la API y ejecutar el agente nativo:
-
-La clave se coloca en una variable de entorno. No se escribe en archivos del
-repositorio ni se pasa literalmente por CLI:
-
-```bash
-export OPENAI_API_KEY='tu-clave-de-proyecto'
-```
-
-Prueba mínima con un episodio de validación:
+Then check deterministic control before spending on an LLM:
 
 ```bash
 env -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
-  .venv-ocbench/bin/python experiments/capx_hanoi/run_reset.py \
-  --dataset-root datasets/ocbench-hanoi-triple-task2 \
-  --policy agent --model gpt-6-astra --base-url https://api.openai.com/v1 \
-  --api-key-env OPENAI_API_KEY --wire responses --effort low \
-  --max-llm-calls 8 \
-  --split validation --num-scenes 1 \
-  --log-dir logs/ocbench-hanoi-reset-agent-astra-8calls
+  .venv/bin/python experiments/capx_hanoi/validate_tracking.py \
+  --dataset-root .data/ocbench-hanoi-triple-task2 \
+  --output logs/audit/hanoi-tracking.json
 ```
 
-El modelo debe admitir imágenes y function calling. GPT-6 Astra requiere
-`--wire responses` para las herramientas. Con `--images always` (el valor por
-defecto) recibe las tres cámaras actuales en cada turno; no se levanta ningún
-servidor CaP-X.
+Set the key in the shell, never in a tracked file:
 
-Para comparar con CaP-X sin percepción ni IK, seleccionar `none`:
+```bash
+export OPENAI_API_KEY='...'
+```
+
+Run one development scene with the native LLM agent and no CaP-X. The default
+64-call horizon is a termination bound, not a monetary spend limit:
 
 ```bash
 env -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
-  .venv-ocbench/bin/python experiments/capx_hanoi/run_reset.py \
-  --dataset-root datasets/ocbench-hanoi-triple-task2 \
-  --policy capx --assistance none --model gpt-6-astra \
+  .venv/bin/python experiments/capx_hanoi/run_reset.py \
+  --dataset-root .data/ocbench-hanoi-triple-task2 \
+  --policy agent \
+  --model gpt-6-astra \
   --base-url https://api.openai.com/v1 \
-  --api-key-env OPENAI_API_KEY --wire responses --effort low --images always \
-  --max-llm-calls 8 \
-  --split validation --num-scenes 1 \
-  --log-dir logs/ocbench-hanoi-reset-capx-none-astra-8calls
+  --api-key-env OPENAI_API_KEY \
+  --wire responses \
+  --goal-mode text \
+  --effort medium \
+  --images always \
+  --live-transcript \
+  --max-llm-calls 64 \
+  --split train \
+  --num-scenes 1 \
+  --log-dir logs/ocbench-hanoi-reset-agent-text-r0
 ```
 
-### Niveles de asistencia CaP-X:
-
-`--assistance` pertenece exclusivamente a `--policy capx`. El runner acepta
-estos tres niveles y usa `none` cuando se omite la opción:
-
-| Variante | Interfaz del LLM | Asistencia adicional | Servidores externos |
-| --- | --- | --- | --- |
-| `agent` | `move_joints`, `done`, `give_up` nativos | Ninguna | Ninguno |
-| `capx --assistance none` | Python y helpers de movimiento | Ninguna percepción o IK | Ninguno |
-| `capx --assistance ik` | Python, movimiento y `solve_ik` | IK local UR5e/Robotiq de OCBench | Ninguno |
-| `capx --assistance sam3_ik` | Python, movimiento, `segment` y `solve_ik` | SAM3 RGB e IK local | Sólo SAM3 |
-
-Los tres niveles CaP-X conservan `move_to_joints`, `move_to_configuration`,
-`open_gripper` y `close_gripper`. `ik` añade solamente `solve_ik`; `sam3_ik`
-añade además `segment`. `plan_grasp` se excluye del prompt y del namespace en
-los tres. `none` e `ik` no crean clientes de servicios; `sam3_ik` crea sólo
-un cliente SAM3. Todos usan la IK local cuando corresponde y no crean clientes
-Pyroki o Contact-GraspNet. Este filtrado controla la interfaz ofrecida, pero la
-ejecución Python conserva los privilegios del proceso y no es un sandbox de
-seguridad.
-
-Para probar `ik`, repetir el comando anterior cambiando dos argumentos:
+Inspect Robots improves the next attempt through an auditable retry, not by
+changing model weights. Summarize the generated EvalLog, inspect the Markdown,
+then pass it to a new run:
 
 ```bash
---assistance ik --log-dir logs/ocbench-hanoi-reset-capx-ik-astra-8calls
+.venv/bin/inspect-robots summarize \
+  logs/ocbench-hanoi-reset-agent-text-r0/ocbench-hanoi-triple-task2-text-reset-30hz_*.json \
+  --model gpt-6-astra \
+  --base-url https://api.openai.com/v1 \
+  --api-key-env OPENAI_API_KEY \
+  -o logs/ocbench-hanoi-reset-agent-text-r0/learnings.md
 ```
 
-La IK recibe posición XYZ en metros y orientación WXYZ unitaria del punto de
-pinzado Robotiq, en coordenadas del mundo MuJoCo. Usa la cinemática del robot
-sin leer poses de discos o postes. Su semilla son las seis articulaciones del
-último objetivo encolado, o la propiocepción actual si aún no hay movimientos.
-Calcula sobre un modelo aislado, sin avanzar la física, y rechaza soluciones
-fuera de límites o con error mayor que 1 mm o 0.01 rad. No planifica colisiones
-ni garantiza que la pose sea alcanzada tras ejecutar una acción.
+Use `--prior-learnings logs/ocbench-hanoi-reset-agent-text-r0/learnings.md`
+on the next `train` run.
+Once selected, freeze that file and use it unchanged on `validation`; reserve
+`test` for the final configuration.
 
-El plugin genérico conserva su perfil `default` anterior para otros usuarios
-que construyen `CapxPolicy` sin `assistance`. El runner lo sustituye por `none`.
-`default` y `full` no están habilitados en este experimento. Los niveles con
-Contact-GraspNet requieren primero profundidad y calibración del embodiment.
+`--policy capx` remains an explicit comparison baseline. Its `none`, `ik`, and
+`sam3_ik` profiles are optional; SAM3 is not needed for the native agent.
 
-Para `sam3_ik`, proporcionar un endpoint real compatible con CaP-X:
+### Live visualization with Rerun
+
+Install the optional viewer once. This does not change the standard runtime
+when `--rerun` is omitted:
 
 ```bash
-env -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
-  .venv-ocbench/bin/python experiments/capx_hanoi/run_reset.py \
-  --dataset-root datasets/ocbench-hanoi-triple-task2 \
-  --policy capx --assistance sam3_ik --sam3-url "${SAM3_URL:?Define SAM3_URL}" \
-  --model gpt-6-astra --base-url https://api.openai.com/v1 \
-  --api-key-env OPENAI_API_KEY --wire responses --effort low --images always \
-  --max-llm-calls 8 --split validation --num-scenes 1 \
-  --log-dir logs/ocbench-hanoi-reset-capx-sam3-ik-astra-8calls
+uv sync --locked --all-packages --extra ocbench --extra rerun
 ```
 
-La URL queda pendiente hasta disponer del servidor; no hay fallback silencioso.
-Sin `--sam3-url`, el runner termina antes de cargar acciones. Con una URL, envía
-una petición `/segment` sobre RGB negro de 224 x 224 antes del replay y exige
-una respuesta válida. Una lista vacía es válida para esa imagen. Si falla,
-termina antes de consumir llamadas al LLM. `--sam3-timeout-s` fija el plazo
-incluidos reintentos (30 s por defecto). El resumen registra URL, cámara `front`
-y resultado de esa comprobación, separada del rollout.
+Add `--rerun` to a reset command to open a local live viewer. It shows the
+three cameras, measured joints, commanded targets, reward, and agent
+transcript, while also writing a replayable `.rrd` file into `--log-dir`.
 
-SAM3 devuelve máscaras 2D y cajas en píxeles del RGB actual. No proporciona
-profundidad ni una posición XYZ en el mundo. El prompt advierte de esta
-convención y de que una máscara no puede pasarse directamente a IK. El LLM
-recibe las tres cámaras aunque `segment` opere sobre `front`.
+```bash
+  --rerun \
+  --rerun-port 9876
+```
 
-Ambas políticas usan por defecto `gpt-6-astra`, `responses`, esfuerzo `low`,
-8 llamadas y las tres cámaras actuales. CaP-X requiere `--images always`.
-`agent` conserva también su opción nativa `on_demand`; para esta comparación
-usar `always`. El resumen registra modelo, esfuerzo, imágenes, policy, nivel
-de asistencia y backend IK. Mantener los mismos episodios, splits y scorer,
-y usar directorios de logs separados. Las llamadas no equivalen a un mismo
-número de acciones: comparar también pasos de control, tiempo de inferencia,
-tiempo total, tokens y coste cuando estén disponibles.
+The viewer needs a local graphical desktop. It is independent of
+`MUJOCO_GL=egl`, which controls headless MuJoCo rendering.
 
-La clave se crea y administra en la configuración del proyecto de OpenAI. El
-runner sólo lee el nombre indicado por `--api-key-env`; nunca persiste su valor.
-La [documentación oficial de autenticación](https://platform.openai.com/docs/api-reference/introduction)
-recomienda cargar claves desde variables de entorno, y la
-[ficha oficial de GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra)
-confirma el identificador `gpt-6-astra`, entrada visual y soporte de Responses.
+## Outputs and evaluation discipline
 
-Las métricas principales son `success_rate_all_scheduled` y
-`mean_agent_steps_on_success`. Los errores permanecen en el denominador. El
-replay de preparación queda registrado como `setup_replay_steps` dentro de la
-provenance, separado de los pasos del agente.
+Each run writes an Inspect EvalLog plus `summary-*.json` under `--log-dir`.
+They contain the agent frames, actions, transcript, usage, robot diagnostics,
+and task verdict. Keep these generated files outside the source directory.
 
-### Validar la infraestructura sin consumir API:
+Use `validation` to iterate and reserve `test` for a frozen configuration. A
+future online-RL workflow must separately collect train rollouts, calculate
+reward, update a trainable policy/checkpoint, and evaluate that frozen version.
+The current agentic runner intentionally performs none of those updates.
 
-[validate_assistance.py](validate_assistance.py) ejecuta el runner real con
-respuestas pregrabadas usando `httpx.MockTransport`. Reproduce el mismo episodio
-de validación para `agent`, `capx none`, `capx ik` y `capx sam3_ik`, comprueba las seis imágenes
-iniciales, modelo y esfuerzo, y ejecuta un movimiento corto por variante. Las
-variantes con IK verifican además tres poses próximas, un objetivo inalcanzable y
-que resolver IK no cambia `qpos`, `qvel`, `ctrl` ni el tiempo físico.
+## Optional dataset audit
+
+`validate.py` audits a downloaded dataset; it does not generate one. It checks
+all numeric records, action conversion, reset-seed candidates, and selected
+replays; `--probe-videos` additionally inspects remote videos. Its output must
+go outside this directory. This optional audit reads the pinned generator
+source, so acquire that separate, read-only checkout only when auditing:
+
+```bash
+git clone https://github.com/seohongpark/ocbench.git ../ocbench
+git -C ../ocbench checkout 95e3d4e16756f864b58e32a6a661286288ed3be8
+```
+
+Then run:
 
 ```bash
 env -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
-  .venv-ocbench/bin/python experiments/capx_hanoi/validate_assistance.py \
-  --dataset-root datasets/ocbench-hanoi-triple-task2 \
-  --output-dir /tmp/capx-hanoi-assistance-check
+  .venv/bin/python experiments/capx_hanoi/validate.py \
+  --dataset-root .data/ocbench-hanoi-triple-task2 \
+  --ocbench-root ../ocbench \
+  --output-dir logs/audit/ocbench-hanoi \
+  --probe-videos
 ```
-
-Sin `--sam3-url`, SAM3 devuelve máscaras pregrabadas y sólo se verifica su
-protocolo. Con `--sam3-url "$SAM3_URL"`, la cuarta variante usa SAM3 real, mientras
-el LLM continúa pregrabado. El informe distingue `sam3_service="mock"` de
-`"real"`; estas máscaras pregrabadas nunca se usan en el runner de evaluación.
-
-El informe `assistance-smoke.json` identifica explícitamente la prueba como
-infraestructura simulada. No evalúa un LLM real ni pretende restaurar Hanoi.
-El dataset debe contener Parquet completos; una descarga parcial falla antes
-de preparar la escena.
-
-### Consumo, bloques cortos y evidencia física:
-
-El runner admite `--max-output-tokens` y `--max-cost-usd` con
-`--wire responses`, en ambos modos. El primero limita salida más razonamiento.
-El segundo usa el consumo devuelto por la API y las tarifas registradas de
-GPT-6 Astra para detenerse antes de una petición adicional. Se aplica a cada
-ensayo; una petición puede superar el umbral. Para un tope de facturación,
-configurar además un [hard limit en el proyecto de OpenAI](https://developers.openai.com/api/docs/guides/spend-limits).
-Su aplicación tampoco es instantánea: puede haber un pequeño exceso mientras
-se propaga. Una alerta de gasto no bloquea peticiones. Los controles locales
-no consultan el saldo ni cambian las herramientas de `agent`.
-
-CaP-X usa `--capx-max-queued-steps 90` por defecto, equivalente a tres segundos
-a 30 Hz. El límite incluye interpolación, pinza y repeticiones para mantener
-un objetivo. Un bloque demasiado largo o con excepción descarta sus acciones
-completas y devuelve el error al modelo. El estado de variables Python puede
-persistir. Reducir el bloque para observar entre fases del movimiento; no se
-añade otro ciclo de feedback al framework.
-
-Los resúmenes ahora contienen `task_success`, `llm_calls`, `llm_usage`,
-`estimated_cost_usd`, `robot_diagnostics`, `termination_reasons` y `errors`.
-`evaluation_status="success"` indica que se completó la evaluación; el reset
-se decide por `successful_scenes` y los scorers físicos. Las respuestas con
-error o truncadas mantienen su consumo. Si no hay información de uso o precio,
-el coste es `null`, no cero. Las tarifas y su fecha se guardan en cada reporte;
-el coste es una estimación, no una lectura de la factura o saldo.
-
-Ambas políticas reciben las convenciones reales del embodiment: pinza
-`0=cerrada`, `1=abierta`, acciones de 1/30 s, incrementos de objetivos limitados
-y diferencia entre configuración enviada y medida. IK, cuando está habilitada,
-usa XYZ del mundo y orientación WXYZ del punto de pinza Robotiq. Los diagnósticos
-de seguimiento y fallo se guardan como evidencia de evaluación, sin exponer
-posiciones de objetos a la política. Los fallos distinguen `bad_floor_contact`,
-`illegal_stack`, `outside_workspace` o un fallo sin diagnóstico específico.
-
-La siguiente ejecución real puede mantener ocho llamadas y esfuerzo `low`,
-añadiendo los límites que correspondan a tu presupuesto, por ejemplo:
-
-```bash
-# Añadir a run_reset.py para cualquiera de las políticas:
---max-output-tokens 4096 --max-cost-usd 1
-# Opcional, exclusivamente para --policy capx:
---capx-max-queued-steps 90
-```
-
-Los límites pueden detener el ensayo antes de acabar. Una salida truncada no
-se ejecuta y queda registrada como error. No aumentarlos automáticamente.
-Tras medir el coste y corregir la interpretación de control, comparar
-`low` contra `medium` con la misma escena y ocho llamadas; después ampliar
-llamadas si los logs muestran que ésa es la limitación.
-
-[validate_tracking.py](validate_tracking.py) mide un objetivo pequeño de
-muñeca desde tres reconstrucciones idénticas del reset, manteniéndolo durante
-1, 3 y 30 pasos. Comprueba el tiempo físico, reducción del error de esa
-articulación y ausencia de fallos. No certifica agarres ni todas las trayectorias.
-Bloquea conexiones de red y no construye ninguna política LLM:
-
-```bash
-env -u OPENAI_API_KEY -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
-  .venv-ocbench/bin/python experiments/capx_hanoi/validate_tracking.py \
-  --dataset-root datasets/ocbench-hanoi-triple-task2 \
-  --output logs/reset-tracking.json
-```
-
-`validate_assistance.py` también verifica la persistencia de uso, captura wire
-y diagnóstico para las cuatro variantes. Sus tokens y costes son ficticios;
-las respuestas están pregrabadas y no consumen API. SAM3 real sigue pendiente.
-
-### Alcance del baseline:
-
-Este flujo queda listo para probar razonamiento visual y control joint-space.
-OCBench no proporciona depth ni extrínsecos en este protocolo, así que
-`plan_grasp` no tiene sus entradas. El modelo puede usar las imágenes, el estado
-articular y `move_to_configuration`, pero el éxito autónomo todavía debe medirse.
-Una primitive de grasp privilegiada cambiaría la pregunta experimental y no se
-incluye silenciosamente en este baseline.
-
-## Trabajo posterior para el objetivo entrenado:
-
-El reset ya tiene runner y evaluación. Todavía falta elegir un modelo y endpoint
-concretos, medir el baseline, construir ejemplos de entrenamiento
-`observación + instrucción -> Python` con los splits fijados, entrenar y
-comparar ambas políticas en las escenas nuevas. El LeRobot actual contiene
-acciones articulares; no contiene etiquetas Python ni conversaciones CaP-X.
-Un bloque de objetivos se puede expresar con el nuevo helper, pero elegir el
-horizonte y verificar su reproducción forma parte de construir esas etiquetas.
-
-Modal puede alojar el entrenamiento y el servidor de un modelo cuyos pesos
-podamos ajustar. Configurar una API externa en CaP-X permite evaluar ese modelo;
-no da acceso a sus pesos para entrenarlos en Modal.
-
-El workflow incluye el nuevo job de CI y el job de publicación del plugin.
-Antes de publicar por primera vez habrá que configurar el entorno GitHub
-`pypi-ocbench` y su trusted publisher en PyPI. No se publicó ningún paquete.

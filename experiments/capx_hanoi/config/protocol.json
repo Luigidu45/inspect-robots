@@ -12,10 +12,10 @@
     "provenance_kind": "reconstructed candidates: root seed 0, initial proprioception matched for all episodes; sampled full replay and RGB checks"
   },
   "source": {
-    "generator_root": "/home/luigidu/ocbench_leonardo/ocbench",
+    "upstream_repository": "https://github.com/seohongpark/ocbench.git",
+    "generator_script": "scripts/generate_hanoi_lerobot.py",
     "generator_commit": "95e3d4e16756f864b58e32a6a661286288ed3be8",
     "generator_script_sha256": "e9bb3da0e21b61e26e21f083abf57c66a2ac3dc123d54b18342ad2808355c254",
-    "reference_root": "/home/luigidu/murobotics_ws/ocbench",
     "reference_commit": "e2cd2f72110b66bd65afab1b855d81ebc73aeacc",
     "matching_python_and_xml_files": 89,
     "versions": {
