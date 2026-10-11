@@ -13,6 +13,7 @@ import contextlib
 import copy
 import hashlib
 import json
+import keyword
 import os
 import re
 import sys
@@ -67,6 +68,11 @@ _PRIOR_LEARNINGS_TEXT_LIMIT = 32 * 1024
 _FENCED_CODE = re.compile(r"^```(?:python)?[ \t]*\n?(.*?)\n?```$", re.DOTALL | re.IGNORECASE)
 _FENCED_ANYWHERE = re.compile(r"```(?:python)?[ \t]*\n(.*?)\n?```", re.DOTALL | re.IGNORECASE)
 _CONTROL_WORD = re.compile(r"(FINISH|GIVE_UP)[.!]?", re.IGNORECASE)
+_PROSE_LINE = re.compile(
+    r"[^\W\d_]+(?:['\u2019][^\W\d_]+)?"
+    r"(?:[ \t,]+[^\W\d_]+(?:['\u2019][^\W\d_]+)?){2,}[.!?]"
+)
+_PYTHON_KEYWORDS = frozenset(word.casefold() for word in (*keyword.kwlist, *keyword.softkwlist))
 
 _HELPER_DOCS = """Helpers available in the persistent namespace:
 
@@ -95,8 +101,10 @@ resolve callable values automatically.
 """
 
 _SYSTEM_TEMPLATE = """You generate Python code to directly solve a robot manipulation task.
-Write raw Python with no Markdown fences. Helpers are already bound. Import
-numpy explicitly when you need it. Variables persist across turns in this
+Write only executable Python with no Markdown fences or explanatory prose.
+Put any explanation in Python comments starting with #. Never put a sentence
+before or after the code. Helpers are already bound. Import numpy explicitly
+when you need it. Variables persist across turns in this
 trial. Perception within a turn uses the initial observation; queued motions
 execute after your code returns, and you verify their effect next turn.
 
@@ -178,6 +186,8 @@ class CapxPolicyConfig(PolicyConfig):
     extrinsics_key: str = "extrinsics"
     max_llm_calls: int = 100
     max_code_failures: int = 3
+    #: Version of the prompt and local code-format recovery, for reproducibility.
+    code_format_version: str = "python-prefix-comments-v1"
     max_speed_frac: float = 0.1
     request_timeout_s: float = 120.0
     gripper_open_is_high: bool = True
@@ -663,7 +673,14 @@ class CapxPolicy(PolicyBase):
                 )
 
             code = _extract_code(message)
+            code, format_notice = _comment_prose_prefix(code)
             result = sandbox.execute(code)
+            if format_notice:
+                result = ExecutionResult(
+                    stdout=result.stdout,
+                    stderr=format_notice + "\n" + result.stderr,
+                    raised=result.raised,
+                )
             self._messages.append({"role": "user", "content": _execution_report(code, result)})
             self._echo_execution(result)
             if result.raised:
@@ -723,6 +740,58 @@ def _extract_code(message: AssistantMessage) -> str:
         return fenced.group(1)
     embedded = _FENCED_ANYWHERE.search(code)
     return embedded.group(1) if embedded is not None else code
+
+
+def _compiles(code: str) -> bool:
+    """Check complete Python syntax without executing imports, helpers, or code."""
+    try:
+        compile(code, "<string>", "exec")
+    except (SyntaxError, ValueError):
+        return False
+    return True
+
+
+def _comment_prose_prefix(code: str) -> tuple[str, str]:
+    """Comment a narrow prose prefix only when all remaining Python compiles.
+
+    A prose line has at least three letter-only words, optional apostrophes
+    and commas, sentence-ending punctuation, and no leading Python keyword.
+    Valid Python is untouched. No assignments, calls, control flow, trailing
+    prose, or broken code are removed; an uncertain reply keeps its error.
+    """
+    if _compiles(code):
+        return code, ""
+    lines = code.splitlines(keepends=True)
+    prefix_end = 0
+    prose_count = 0
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            prefix_end = index + 1
+            continue
+        if (
+            _PROSE_LINE.fullmatch(stripped) is None
+            or stripped.split()[0].casefold() in _PYTHON_KEYWORDS
+        ):
+            break
+        prose_count += 1
+        prefix_end = index + 1
+    if not prose_count:
+        return code, ""
+    remainder = "".join(lines[prefix_end:])
+    if not remainder.strip() or not _compiles(remainder):
+        return code, ""
+    normalized = (
+        "".join("# " + line if line.strip() else line for line in lines[:prefix_end]) + remainder
+    )
+    # Validate the exact source that will be executed, including its prefix.
+    if not _compiles(normalized):
+        return code, ""
+    label = "line" if prose_count == 1 else "lines"
+    return normalized, (
+        f"[capx] format: commented {prose_count} leading prose {label}; "
+        "Python statements unchanged."
+    )
 
 
 def _execution_report(code: str, result: ExecutionResult) -> str:

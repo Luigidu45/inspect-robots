@@ -185,6 +185,13 @@ Once selected, freeze that file and use it unchanged on `validation`; reserve
 `--policy capx` remains an explicit comparison baseline. Its `none`, `ik`, and
 `sam3_ik` profiles are optional; SAM3 is not needed for the native agent.
 
+CaP-X's code-format recovery is shared across assistance profiles. It can
+comment a limited prose prefix without changing the remaining Python. The
+EvalLog policy config records `code_format_version`; compare runs from the same
+version and inspect format notices separately from reset success. This adapter
+supplies no Hanoi reset trajectory or disk-transfer sequence. The policy must
+choose its targets and plan its transfers from the goal and observations.
+
 ### Robot FK: optional spatial reference
 
 Add `--robot-fk` to `run_reset.py` for any of `agent`, `capx-none`, or `capx-ik`.

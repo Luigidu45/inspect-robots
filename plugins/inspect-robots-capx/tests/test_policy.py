@@ -394,6 +394,141 @@ def test_prose_wrapped_fenced_code_executes_the_fenced_block() -> None:
     assert np.array_equal(chunk.actions[-1].data, np.array([0.1, -0.1, 1.0]))
 
 
+@pytest.mark.parametrize("wire", ["chat", "responses"])
+@pytest.mark.parametrize("assistance", ["none", "ik"])
+def test_unfenced_prose_prefix_is_commented_without_an_extra_call(
+    wire: str, assistance: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prose = (
+        "I\u2019ll move the top disk first, keeping each transfer legal and clearing "
+        "the peg before moving sideways."
+    )
+    code = "import numpy as np\nmove_to_joints(np.array([0.1, -0.1]))"
+    reply = prose + "\n" + code
+    completion = _completion if wire == "chat" else _responses_completion
+    script = _ScriptedTransport([completion(reply)])
+    policy = _bound_policy(
+        script, wire=wire, assistance=assistance, max_llm_calls=1, transcript_echo=True
+    )
+    try:
+        chunk = policy.act(_observation())
+        transcript = policy.transcript()
+
+        assert len(script.llm_requests) == 1
+        assert np.array_equal(chunk.actions[-1].data, np.array([0.1, -0.1, 1.0]))
+        assert chunk.actions[0].meta["code"] == "# " + prose + "\n" + code
+        assert transcript is not None
+        assert transcript[-2]["content"] == reply
+        assert "commented 1 leading prose line" in transcript[-1]["content"]
+        assert "SyntaxError" not in transcript[-1]["content"]
+        assert policy._consecutive_failures == 0
+        assert isinstance(policy.config, CapxPolicyConfig)
+        assert policy.config.code_format_version == "python-prefix-comments-v1"
+        stderr = capsys.readouterr().err
+        assert stderr.count("[capx] format:") == 1
+    finally:
+        policy.close()
+
+
+def test_multiple_prose_lines_preserve_line_numbers_and_python_strings() -> None:
+    reply = (
+        "REGENERATE\n"
+        "I'll inspect the current observation.\n\n"
+        "Después moveré el brazo lentamente.\n"
+        'print("I\u2019ll keep this string unchanged.")\n'
+        "move_to_configuration([0.1, 0.0, 1.0])"
+    )
+    policy = _bound_policy(_ScriptedTransport([_completion(reply)]), max_llm_calls=1)
+    try:
+        chunk = policy.act(_observation())
+        assert chunk.actions[0].meta["code"] == (
+            "# I'll inspect the current observation.\n\n"
+            "# Después moveré el brazo lentamente.\n"
+            'print("I\u2019ll keep this string unchanged.")\n'
+            "move_to_configuration([0.1, 0.0, 1.0])"
+        )
+        transcript = policy.transcript()
+        assert transcript is not None
+        assert "commented 2 leading prose lines" in transcript[-1]["content"]
+        assert "I\u2019ll keep this string unchanged." in transcript[-1]["content"]
+    finally:
+        policy.close()
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "target =\nmove_to_configuration([0.1, 0.0, 1.0])",
+        "import numpy as\nmove_to_configuration([0.1, 0.0, 1.0])",
+        "raise robot errors.\nmove_to_configuration([0.1, 0.0, 1.0])",
+        "True and False.\nmove_to_configuration([0.1, 0.0, 1.0])",
+        "if True:\nmove_to_configuration([0.1, 0.0, 1.0])",
+        "I'll move the robot slowly.\ntarget =\nmove_to_configuration([0.1, 0.0, 1.0])",
+        "move_to_configuration([0.1, 0.0, 1.0])\nI'll move the robot slowly.",
+        "I'll move the robot slowly.\nreturn\nmove_to_configuration([0.1, 0.0, 1.0])",
+        "I'll move the robot slowly.",
+    ],
+)
+def test_format_recovery_never_drops_broken_python_or_trailing_prose(reply: str) -> None:
+    policy = _bound_policy(
+        _ScriptedTransport([_completion(reply)]), max_llm_calls=1, max_code_failures=1
+    )
+    try:
+        with pytest.raises(RuntimeError, match="1 consecutive turns"):
+            policy.act(_observation())
+        assert policy._motion is not None and not policy._motion.has_actions()
+        transcript = policy.transcript()
+        assert transcript is not None
+        assert f"```python\n{reply}\n```" in transcript[-1]["content"]
+        assert "[capx] format:" not in transcript[-1]["content"]
+        assert (
+            "SyntaxError" in transcript[-1]["content"]
+            or "IndentationError" in (transcript[-1]["content"])
+        )
+    finally:
+        policy.close()
+
+
+def test_valid_python_with_prose_strings_and_comments_is_preserved() -> None:
+    code = (
+        'text = """I\u2019ll inspect the observation.\nThen I will choose a target."""\n'
+        "# I'll move the robot slowly.\n"
+        "move_to_configuration([0.1, 0.0, 1.0])"
+    )
+    policy = _bound_policy(_ScriptedTransport([_completion(code)]), max_llm_calls=1)
+    try:
+        chunk = policy.act(_observation())
+        assert chunk.actions[0].meta["code"] == code
+        transcript = policy.transcript()
+        assert transcript is not None and "[capx] format:" not in transcript[-1]["content"]
+    finally:
+        policy.close()
+
+
+def test_recovered_format_still_discards_motion_on_runtime_error() -> None:
+    reply = (
+        "I'll move the robot slowly.\n"
+        "move_to_configuration([0.1, 0.0, 1.0])\n"
+        "raise ValueError('invalid target')"
+    )
+    policy = _bound_policy(
+        _ScriptedTransport([_completion(reply)]), max_llm_calls=1, max_code_failures=1
+    )
+    try:
+        with pytest.raises(RuntimeError, match="1 consecutive turns"):
+            policy.act(_observation())
+        assert policy._motion is not None and not policy._motion.has_actions()
+        transcript = policy.transcript()
+        assert transcript is not None
+        report = transcript[-1]["content"]
+        assert report.count("[capx] format:") == 1
+        assert "ValueError: invalid target" in report
+        assert "All queued motions from failed code were discarded." in report
+        assert policy._consecutive_failures == 1
+    finally:
+        policy.close()
+
+
 def test_perception_only_turn_feeds_report_back_then_returns_motion() -> None:
     script = _ScriptedTransport(
         [

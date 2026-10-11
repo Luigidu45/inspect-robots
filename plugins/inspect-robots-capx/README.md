@@ -114,7 +114,25 @@ camera frame; model code transforms them with `extrinsics @ pose` before IK.
 ## Execution model:
 
 Each LLM turn returns raw Python, optionally wrapped in one Markdown code
-fence. The namespace persists for the trial, including variables and imports.
+fence. The prompt requests executable Python only, with explanations in `#`
+comments. Valid Python is preserved. If an otherwise invalid reply begins with
+short prose sentences, the adapter can comment that prefix locally when the
+entire remaining Python compiles. This limited recovery accepts letter-only
+words, apostrophes, commas, and sentence-ending punctuation; a leading Python
+keyword prevents recovery. This is a lexical heuristic, not a semantic
+classifier. It comments only an accepted leading prefix and does not repair
+other syntax errors or trailing prose. Compilation checks Python syntax, not
+the validity of a manipulation plan. Errors outside this limited recovery
+return to the model through the usual execution feedback.
+
+Recovery adds one `format` notice to stderr and the execution report, without
+another model request. The original reply remains in the transcript; executed
+code includes the prefix as comments. The policy config records
+`code_format_version=python-prefix-comments-v1`. All assistance profiles use
+the same normalization. Use the same version when comparing profiles, and
+keep format recoveries separate from physical task success in analysis.
+
+The namespace persists for the trial, including variables and imports.
 The helpers expose the current observation as `obs` and provide:
 
 - `segment(text)` for SAM3 text-prompt masks
