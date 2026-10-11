@@ -126,6 +126,24 @@
     ],
     "adapter_reset_seed_rule": "Use the scene manifest reset seed exactly; record the framework trial seed separately and verify the initial world hash before executing actions."
   },
+  "reset_robot_fk_variant": {
+    "enabled_by": "--robot-fk",
+    "default": false,
+    "applies_to": ["agent", "capx-none", "capx-ik"],
+    "protocols": [
+      "ocbench-hanoi-text-reset-30hz-fk-v1",
+      "ocbench-hanoi-reference-reset-30hz-fk-v1"
+    ],
+    "state_fields": {
+      "pinch_pos": "world XYZ meters, float32[3]",
+      "pinch_quat_wxyz": "unit WXYZ quaternion, float32[4]"
+    },
+    "source": "measured arm joints, isolated robot model, fixed attachment-to-pinch transform",
+    "same_frame_as": "ocbench-local solve_ik",
+    "exposes_object_or_peg_poses": false,
+    "changes_robot_control_or_scoring": false,
+    "comparison_rule": "Use the same FK flag across policies; report original and FK variants separately."
+  },
   "phase1_scope": {
     "numeric_rows": "all 933889",
     "seed_candidates": "all 225",

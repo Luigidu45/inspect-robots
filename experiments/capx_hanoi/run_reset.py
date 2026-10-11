@@ -162,6 +162,11 @@ def main() -> int:
         help="Describe the canonical reset in text (default) or also expose goal images.",
     )
     parser.add_argument("--split", choices=["train", "validation", "test"], default="validation")
+    parser.add_argument(
+        "--robot-fk",
+        action="store_true",
+        help="All policies: expose robot-only world pinch XYZ/WXYZ as a separate variant.",
+    )
     parser.add_argument("--num-scenes", type=int)
     parser.add_argument(
         "--max-llm-calls",
@@ -296,12 +301,14 @@ def main() -> int:
         args.split,
         args.num_scenes,
         args.goal_mode,
+        robot_fk=args.robot_fk,
     )
     episode_ids = [int(scene.metadata["dataset_episode"]) for scene in task.scenes]
     episode_actions = load_episode_actions(args.dataset_root, episode_ids)
     robot = OCBenchHanoiResetEmbodiment(
         episode_actions,
         expose_reference_images=args.goal_mode == "reference",
+        expose_robot_fk=args.robot_fk,
     )
     policy = _build_policy(args, robot)
     _attach_diagnostics(policy, robot)
@@ -364,10 +371,11 @@ def main() -> int:
             "rerun": args.rerun,
             "rerun_port": args.rerun_port,
             "goal_mode": args.goal_mode,
+            "robot_fk": args.robot_fk,
             "split": args.split,
             "dataset_root": str(args.dataset_root.resolve()),
             "dataset_episodes": episode_ids,
-            "protocol": f"ocbench-hanoi-{args.goal_mode}-reset-30hz-v1",
+            "protocol": task.metadata["protocol"],
             "task_success": len(successful) == len(task.scenes),
             "llm_calls": sum(report.get("llm_calls", 0) for report in usage_reports),
             "llm_usage": usage_reports,

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 from inspect_robots.scene import Scene
@@ -372,6 +373,54 @@ def test_ik_requires_initialized_robot() -> None:
     robot = OCBenchEmbodiment()
     with pytest.raises(RuntimeError, match="reset before"):
         robot.solve_ik(np.zeros(3), np.array([1.0, 0.0, 0.0, 0.0]), np.zeros(6))
+
+
+def test_fk_observation_is_optional_and_contains_only_robot_pose(
+    simulator: FakeEnv,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    robot = OCBenchEmbodiment(expose_robot_fk=True)
+    poses: list[npt.NDArray[np.float64]] = []
+
+    def fk(
+        joints: npt.NDArray[np.float64],
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+        poses.append(joints.copy())
+        return np.array([0.4, 0.1, 0.3]), np.array([1.0, 0.0, 0.0, 0.0])
+
+    monkeypatch.setattr(robot, "forward_kinematics", fk)
+    observation = robot.reset(Scene("s", "restore"))
+    assert set(observation.state) == {"joint_pos", "pinch_pos", "pinch_quat_wxyz"}
+    assert observation.state["pinch_pos"].dtype == np.float32
+    assert np.allclose(observation.state["pinch_pos"], [0.4, 0.1, 0.3])
+    assert np.array_equal(poses[0], observation.state["joint_pos"][:6])
+    assert observation.extra == {}
+    assert robot.info.observation_space.state is not None
+    assert {field.key for field in robot.info.observation_space.state.fields} == set(
+        observation.state
+    )
+    assert robot.info.docs is not None and "pinch_quat_wxyz" in robot.info.docs
+    robot.close()
+
+
+@pytest.mark.parametrize("joints", [[0] * 5, [0] * 7, [float("nan")] * 6])
+def test_fk_rejects_bad_joint_vectors_before_computing(
+    simulator: FakeEnv,
+    joints: list[float],
+) -> None:
+    robot = OCBenchEmbodiment()
+    robot.reset(Scene("s", "restore"))
+    with pytest.raises(ValueError, match="six finite"):
+        robot.forward_kinematics(np.array(joints))
+    assert simulator.command is None
+
+
+def test_fk_requires_initialized_robot_and_boolean_option() -> None:
+    robot = OCBenchEmbodiment()
+    with pytest.raises(RuntimeError, match="reset before"):
+        robot.forward_kinematics(np.zeros(6))
+    with pytest.raises(ValueError, match="expose_robot_fk"):
+        OCBenchEmbodiment(expose_robot_fk=1)  # type: ignore[arg-type]
 
 
 def test_reset_docs_retain_gripper_timing_and_frame_conventions() -> None:

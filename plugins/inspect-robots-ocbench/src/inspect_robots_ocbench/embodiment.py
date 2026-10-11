@@ -44,11 +44,19 @@ _ROBOT_DOCS = (
     "[0.18, 0.18, 0.18, 0.36, 0.36, 0.36] rad and 0.12 gripper opening. "
     "These are command limits, not a guarantee of physical convergence. A requested "
     "configuration is not evidence that the robot reached it; inspect measured joint_pos "
-    "and camera images after execution. Only RGB and joint_pos are exposed, without "
+    "and camera images after execution. RGB and joint_pos are exposed, without "
     "depth, calibrated extrinsics or privileged object poses. When IK assistance is enabled, "
     "its target is the "
     "Robotiq PINCH POINT in world XYZ meters with a unit WXYZ quaternion. Generic UR5 "
     "DH coordinates or flange coordinates must not be treated as this world pinch frame."
+)
+_FK_DOCS = (
+    " Robot FK is enabled: state['pinch_pos'] is the current Robotiq pinch XYZ in "
+    "world meters, and state['pinch_quat_wxyz'] is its unit WXYZ quaternion. These "
+    "are computed from measured arm joints and robot geometry, without object poses. "
+    "They use the same pinch frame as solve_ik. Use this current pose as a spatial "
+    "reference instead of searching inverse IK to reconstruct it. FK does not locate "
+    "disks or pegs, establish a grasp, or validate a trajectory."
 )
 
 
@@ -61,8 +69,12 @@ class OCBenchEmbodiment:
     Privileged task geometry is never included in policy observations.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, expose_robot_fk: bool = False) -> None:
+        if not isinstance(expose_robot_fk, bool):
+            raise ValueError("expose_robot_fk must be a bool")
         self._env: Any = None
+        self._fk_data: Any = None
+        self._expose_robot_fk = expose_robot_fk
         self._instruction = ""
         self._steps = 0
         self._control_diagnostics: dict[str, Any] = {}
@@ -90,7 +102,17 @@ class OCBenchEmbodiment:
             ),
             observation_space=ObservationSpace(
                 cameras=tuple(CameraSpec(name, 224, 224) for name in _CAMERAS),
-                state=StateSpec((StateField("joint_pos", (7,), "rad+normalized", "float32"),)),
+                state=StateSpec(
+                    (StateField("joint_pos", (7,), "rad+normalized", "float32"),)
+                    + (
+                        (
+                            StateField("pinch_pos", (3,), "m", "float32"),
+                            StateField("pinch_quat_wxyz", (4,), "unit quaternion WXYZ", "float32"),
+                        )
+                        if expose_robot_fk
+                        else ()
+                    )
+                ),
             ),
             control_hz=30.0,
             is_simulated=True,
@@ -100,6 +122,7 @@ class OCBenchEmbodiment:
             docs=(
                 _ROBOT_DOCS + " Solve the three-disk Tower of "
                 "Hanoi starting on the middle peg, ending on either outer peg."
+                + (_FK_DOCS if expose_robot_fk else "")
             ),
         )
 
@@ -249,6 +272,41 @@ class OCBenchEmbodiment:
         if self._env is not None:
             self._env.close()
             self._env = None
+        self._fk_data = None
+
+    def forward_kinematics(
+        self,
+        joint_pos: npt.NDArray[np.float64],
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+        """Return world XYZ and unit WXYZ for the robot's Robotiq pinch frame.
+
+        Only the supplied six arm joints, isolated robot model, and fixed tool
+        transform are used. Neither the physical world nor the IK workspace is
+        modified. This computes a pose, not reachability or collision safety.
+        """
+        if self._env is None:
+            raise RuntimeError("Call reset before computing FK")
+        joints = np.asarray(joint_pos, dtype=np.float64)
+        if joints.shape != (6,) or not np.all(np.isfinite(joints)):
+            raise ValueError("FK expects six finite arm joints")
+        raw = self._env.unwrapped
+        model = raw._ik._model
+        mujoco = importlib.import_module("mujoco")
+        lie = importlib.import_module("ocbench.lie")
+        if self._fk_data is None:
+            self._fk_data = mujoco.MjData(model)
+        self._fk_data.qpos[:] = joints
+        mujoco.mj_kinematics(model, self._fk_data)
+        site_id = model.site("attachment_site").id
+        attach = lie.SE3.from_rotation_and_translation(
+            lie.SO3.from_matrix(self._fk_data.site_xmat[site_id].reshape(3, 3)),
+            self._fk_data.site_xpos[site_id].copy(),
+        )
+        pinch = attach @ raw._T_pa.inverse()
+        return (
+            np.asarray(pinch.translation(), dtype=np.float64).copy(),
+            np.asarray(pinch.rotation().wxyz, dtype=np.float64).copy(),
+        )
 
     def solve_ik(
         self,
@@ -333,12 +391,21 @@ class OCBenchEmbodiment:
 
     def _observe(self) -> Observation:
         timestamp = self._steps / 30
+        state = {"joint_pos": self._joint_state()}
+        if self._expose_robot_fk:
+            position, quaternion = self.forward_kinematics(
+                state["joint_pos"][:6].astype(np.float64)
+            )
+            state.update(
+                pinch_pos=position.astype(np.float32),
+                pinch_quat_wxyz=quaternion.astype(np.float32),
+            )
         return Observation(
             images={
                 name: self._env.unwrapped.render(camera=camera).copy()
                 for name, camera in _CAMERAS.items()
             },
-            state={"joint_pos": self._joint_state()},
+            state=state,
             instruction=self._instruction,
             state_time=timestamp,
             image_times=dict.fromkeys(_CAMERAS, timestamp),
@@ -374,8 +441,9 @@ class OCBenchHanoiResetEmbodiment(OCBenchEmbodiment):
         episode_actions: dict[int, npt.NDArray[np.floating[Any]]],
         *,
         expose_reference_images: bool = False,
+        expose_robot_fk: bool = False,
     ) -> None:
-        super().__init__()
+        super().__init__(expose_robot_fk=expose_robot_fk)
         if not episode_actions:
             raise ValueError("episode_actions must contain at least one episode")
         self._episode_actions: dict[int, npt.NDArray[np.float32]] = {}
@@ -407,6 +475,7 @@ class OCBenchHanoiResetEmbodiment(OCBenchEmbodiment):
                     if expose_reference_images
                     else " No goal image is provided; follow the textual task definition."
                 )
+                + (_FK_DOCS if expose_robot_fk else "")
             ),
         )
 

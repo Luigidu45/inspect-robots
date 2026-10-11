@@ -28,8 +28,19 @@ the timing of a recorded trajectory; replay success must be measured separately.
 The task loads a supplied JSON scene manifest. Its reset seeds override the
 framework trial seed and the adapter checks each initial world hash. A mismatch
 fails the trial. All scheduled resets remain in the evaluation denominator.
-Only RGB and `joint_pos` reach the policy. Object positions, peg geometry,
+RGB and `joint_pos` reach the policy by default. Object positions, peg geometry,
 rewards and success flags are reserved for the simulator and scorer.
+
+The optional `expose_robot_fk=True` constructor setting adds measured world
+pinch XYZ and a unit WXYZ quaternion. Hanoi reset runs select it with
+`--robot-fk`. FK uses a separate robot-only MuJoCo workspace and the same
+Robotiq pinch frame as local IK. It supplies a spatial reference without
+validating reachability, collision avoidance, or grasp success.
+
+FK depends on OCBench internals (`_ik._model`, `_T_pa`, and `attachment_site`)
+in the reviewed runtime. The physical regression test in `tests/test_fk_sim.py`
+checks the pinch frame, FK/IK round trips, and isolation from simulator and IK
+state. Re-run that test when upgrading OCBench before comparing FK variants.
 
 Success requires OCBench success, healthy physics and no task failure. A
 policy's `FINISH` request does not imply success. This package does not include

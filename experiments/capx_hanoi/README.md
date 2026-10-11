@@ -185,6 +185,37 @@ Once selected, freeze that file and use it unchanged on `validation`; reserve
 `--policy capx` remains an explicit comparison baseline. Its `none`, `ik`, and
 `sam3_ik` profiles are optional; SAM3 is not needed for the native agent.
 
+### Robot FK: optional spatial reference
+
+Add `--robot-fk` to `run_reset.py` for any of `agent`, `capx-none`, or `capx-ik`.
+The default remains RGB plus joints. With FK enabled, each current observation
+also contains `state['pinch_pos']` (world XYZ in meters) and
+`state['pinch_quat_wxyz']` (a unit WXYZ quaternion). These values are computed
+from measured arm joints in a separate robot-only MuJoCo workspace, using the
+same Robotiq pinch frame as local IK. FK does not expose disk or peg poses and
+does not move the robot or change the IK solver workspace.
+
+FK depends on the reviewed OCBench runtime's internal robot model and tool
+transform. Re-run the physical FK/IK frame test after an upstream upgrade.
+
+For CaP-X, the arrays are available in `obs['state']`. The native agent receives
+them as state text. Embodiment notes describe their frame and purpose. The
+`none` profile still has no `solve_ik` helper. FK gives a spatial reference; it
+does not guarantee that a requested pose is reachable, that a grasp succeeds,
+or that the interpolated trajectory avoids contact.
+
+The EvalLog task metadata and run summary record `robot_fk`. FK runs use a
+separate protocol identifier, such as `ocbench-hanoi-text-reset-30hz-fk-v1`.
+Keep the flag identical across all three modes in a comparison and use separate
+log directories for the original and FK variants.
+
+Check the robot FK/IK frame round trip without an LLM or dataset replay:
+
+```bash
+env -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
+  .venv/bin/python -m pytest -q plugins/inspect-robots-ocbench/tests/test_fk_sim.py
+```
+
 ### Live visualization with Rerun
 
 Install the optional viewer once. This does not change the standard runtime

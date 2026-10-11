@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 import numpy as np
+import numpy.typing as npt
 import pytest
 from inspect_robots_agent import LLMAgentPolicy
 from inspect_robots_ocbench import OCBenchHanoiResetEmbodiment
@@ -20,8 +21,11 @@ from inspect_robots.scene import Scene
 from inspect_robots.types import Action, Observation, StepResult
 
 
+@pytest.mark.parametrize("robot_fk", [False, True])
 def test_reset_runner_counts_success_without_sending_reference_images(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    robot_fk: bool,
 ) -> None:
     """The default reset must count success and send only current cameras."""
     experiment = Path(__file__).parents[1]
@@ -70,9 +74,14 @@ def test_reset_runner_counts_success_without_sending_reference_images(
                 if self._expose_reference_images
                 else {}
             )
+            state = {"joint_pos": np.array([0, 0, 0, 0, 0, 0, 0.5])}
+            if self._expose_robot_fk:
+                state.update(
+                    pinch_pos=np.array([0.4, 0.1, 0.3]), pinch_quat_wxyz=np.array([1, 0, 0, 0])
+                )
             return Observation(
                 images=dict.fromkeys(["front", "side", "wrist"], image),
-                state={"joint_pos": np.array([0, 0, 0, 0, 0, 0, 0.5])},
+                state=state,
                 instruction=scene.instruction,
                 extra=extra,
             )
@@ -121,7 +130,8 @@ def test_reset_runner_counts_success_without_sending_reference_images(
             "1",
             "--log-dir",
             str(tmp_path / "logs"),
-        ],
+        ]
+        + (["--robot-fk"] if robot_fk else []),
     )
 
     assert run_reset.main() == 0
@@ -132,11 +142,15 @@ def test_reset_runner_counts_success_without_sending_reference_images(
     assert summary["policy"] == "agent"
     assert summary["max_llm_calls"] == 64
     assert summary["goal_mode"] == "text"
-    assert summary["protocol"] == "ocbench-hanoi-text-reset-30hz-v1"
+    expected_protocol = "ocbench-hanoi-text-reset-30hz" + ("-fk" if robot_fk else "") + "-v1"
+    assert summary["protocol"] == expected_protocol
+    assert summary["robot_fk"] is robot_fk
     assert summary["rerun"] is False and summary["rerun_port"] is None
     contents = requests[0]["input"][-1]["content"]
     assert sum(part["type"] == "input_image" for part in contents) == 3
     assert "Reference goal images" not in json.dumps(contents)
+    assert ("pinch_pos" in json.dumps(contents)) is robot_fk
+    assert ("pinch_quat_wxyz" in json.dumps(contents)) is robot_fk
     assert {tool["name"] for tool in requests[0]["tools"]} == {
         "move_joints",
         "done",
@@ -159,6 +173,120 @@ def runner() -> Any:
         return module
     finally:
         sys.path.remove(str(experiment))
+
+
+@pytest.mark.parametrize(
+    ("backend", "assistance"), [("agent", None), ("capx", "none"), ("capx", "ik")]
+)
+def test_fk_state_reaches_each_backend_without_enabling_extra_helpers(
+    runner: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+    assistance: str | None,
+) -> None:
+    """FK is common robot state; inverse kinematics remains an explicit assistance level."""
+    import inspect_robots_agent
+    import inspect_robots_capx
+
+    requests: list[dict[str, Any]] = []
+    module = inspect_robots_agent if backend == "agent" else inspect_robots_capx
+    name = "LLMAgentPolicy" if backend == "agent" else "CapxPolicy"
+    original = getattr(module, name)
+    robot = OCBenchHanoiResetEmbodiment({0: np.zeros((1, 7))}, expose_robot_fk=True)
+    ik_calls: list[npt.NDArray[np.float64]] = []
+
+    def solve(
+        position: npt.NDArray[np.float64],
+        quat: npt.NDArray[np.float64],
+        seed: npt.NDArray[np.float64],
+    ) -> npt.NDArray[np.float64]:
+        ik_calls.append(position.copy())
+        assert np.allclose(position, [0.4, 0.1, 0.3])
+        assert np.array_equal(quat, [1, 0, 0, 0])
+        return seed + 0.01
+
+    monkeypatch.setattr(robot, "solve_ik", solve)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        output: list[dict[str, Any]]
+        if backend == "agent":
+            output = [
+                {
+                    "type": "function_call",
+                    "call_id": "c0",
+                    "name": "move_joints",
+                    "arguments": json.dumps(
+                        {"targets": {"shoulder_pan": 0.01}, "note": "FK reference checked."}
+                    ),
+                }
+            ]
+        else:
+            code = "assert 'segment' not in globals()\nassert 'plan_grasp' not in globals()\n"
+            if assistance == "ik":
+                code += (
+                    "q = solve_ik(obs['state']['pinch_pos'], obs['state']['pinch_quat_wxyz'])\n"
+                    "move_to_joints(q)"
+                )
+            else:
+                code += (
+                    "assert 'solve_ik' not in globals()\n"
+                    "assert len(obs['state']['pinch_pos']) == 3\n"
+                    "move_to_joints([0.01, 0, 0, 0, 0, 0])"
+                )
+            output = [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": code}],
+                }
+            ]
+        return httpx.Response(200, json={"status": "completed", "output": output})
+
+    def construct(**kwargs: Any) -> Any:
+        return original(**kwargs, env={}, transport=httpx.MockTransport(respond))
+
+    monkeypatch.setattr(module, name, construct)
+    args = argparse.Namespace(
+        policy=backend,
+        assistance=assistance,
+        model="scripted",
+        base_url="http://test/v1",
+        api_key_env="TEST_KEY",
+        wire="responses",
+        max_llm_calls=4,
+        prior_learnings=None,
+        effort="medium",
+        images="always",
+        live_transcript=False,
+        sam3_url=None,
+        sam3_timeout_s=30,
+    )
+    policy = runner._build_policy(args, robot)
+    try:
+        policy.bind(robot.info)
+        policy.reset(Scene("s", "restore"))
+        image = np.zeros((224, 224, 3), dtype=np.uint8)
+        chunk = policy.act(
+            Observation(
+                images=dict.fromkeys(["front", "side", "wrist"], image),
+                state={
+                    "joint_pos": np.array([0, 0, 0, 0, 0, 0, 0.5]),
+                    "pinch_pos": np.array([0.4, 0.1, 0.3]),
+                    "pinch_quat_wxyz": np.array([1, 0, 0, 0]),
+                },
+            )
+        )
+        assert len(chunk) > 0 and chunk.actions[-1].data[0] == pytest.approx(0.01)
+        encoded = json.dumps(requests[0]["input"])
+        assert "state[pinch_pos]" in encoded and "state[pinch_quat_wxyz]" in encoded
+        assert "same pinch frame as solve_ik" in encoded
+        assert len(ik_calls) == (1 if assistance == "ik" else 0)
+    finally:
+        close = getattr(policy, "close", None)
+        if callable(close):
+            close()
+        robot.close()
 
 
 @pytest.mark.parametrize(

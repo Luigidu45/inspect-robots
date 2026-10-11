@@ -79,12 +79,17 @@ def hanoi_reset_task(
     split: str = "validation",
     num_scenes: int | None = None,
     goal_mode: str = "text",
+    *,
+    robot_fk: bool = False,
 ) -> Task:
     """Restore recorded solved episodes to their per-episode original stack."""
     if split not in {"train", "validation", "test"}:
         raise ValueError("split must be train, validation or test")
     if goal_mode not in {"text", "reference"}:
         raise ValueError("goal_mode must be text or reference")
+    if not isinstance(robot_fk, bool):
+        raise ValueError("robot_fk must be a bool")
+    variant = "-fk" if robot_fk else ""
     split_bytes = Path(split_manifest_path).read_bytes()
     ledger_bytes = Path(episode_ledger_path).read_bytes()
     split_manifest = json.loads(split_bytes)
@@ -120,7 +125,7 @@ def hanoi_reset_task(
             )
         )
     return Task(
-        name=f"ocbench-hanoi-triple-task2-{goal_mode}-reset-30hz",
+        name=f"ocbench-hanoi-triple-task2-{goal_mode}-reset-30hz{variant}",
         scenes=scenes,
         scorer=["success_at_end", "episode_length"],
         max_steps=7000,
@@ -134,6 +139,7 @@ def hanoi_reset_task(
             "split": split,
             "scheduled_scenes": len(scenes),
             "goal_mode": goal_mode,
-            "protocol": f"ocbench-hanoi-{goal_mode}-reset-30hz-v1",
+            "robot_fk": robot_fk,
+            "protocol": f"ocbench-hanoi-{goal_mode}-reset-30hz{variant}-v1",
         },
     )
