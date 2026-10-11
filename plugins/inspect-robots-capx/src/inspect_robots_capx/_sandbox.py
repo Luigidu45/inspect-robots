@@ -87,6 +87,8 @@ class CodeSandbox:
         self._extrinsics_key = extrinsics_key
         self._observation: Observation | None = None
         self._namespace: dict[str, Any] = {}
+        self._ik_error_count = 0
+        self._ik_first_error = ""
         self.reset()
 
     def reset(self) -> None:
@@ -129,6 +131,8 @@ class CodeSandbox:
         stdout = io.StringIO()
         stderr = io.StringIO()
         raised = False
+        self._ik_error_count = 0
+        self._ik_first_error = ""
         cursor = self._motion.cursor
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             try:
@@ -145,6 +149,12 @@ class CodeSandbox:
                 else:
                     self._motion.reset()
                 print("All queued motions from failed code were discarded.", file=stderr)
+        if self._ik_error_count:
+            print(
+                f"[capx] IK rejected {self._ik_error_count} request(s); "
+                f"first error: {self._ik_first_error}",
+                file=stderr,
+            )
         return ExecutionResult(stdout=stdout.getvalue(), stderr=stderr.getvalue(), raised=raised)
 
     def _require_observation(self) -> Observation:
@@ -188,6 +198,25 @@ class CodeSandbox:
         )
 
     def _solve_ik(
+        self,
+        position: npt.NDArray[Any],
+        quaternion_wxyz: npt.NDArray[Any],
+    ) -> npt.NDArray[np.float64]:
+        """Return arm joints for a documented XYZ/WXYZ pinch pose, without moving.
+
+        Rejected targets raise the original exception. Their first error and
+        total count are reported once per block, even if Python catches them.
+        """
+        try:
+            return self._solve_ik_impl(position, quaternion_wxyz)
+        except Exception as exc:
+            self._ik_error_count += 1
+            if self._ik_error_count == 1:
+                detail = " ".join(str(exc).split())[:400]
+                self._ik_first_error = f"{type(exc).__name__}: {detail}"
+            raise
+
+    def _solve_ik_impl(
         self,
         position: npt.NDArray[Any],
         quaternion_wxyz: npt.NDArray[Any],

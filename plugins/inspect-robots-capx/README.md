@@ -149,7 +149,13 @@ metadata. A clean turn with no queued motion continues inside the same
 `act()` call. `max_llm_calls` bounds all turns in a trial.
 `max_code_failures` counts consecutive Python exceptions across `act()` calls.
 A clean Python turn resets it. Code that queues motion and then raises still
-returns that motion chunk, while the error remains counted for the next turn.
+discards that block's motions, while the error remains counted for the next turn.
+
+IK rejections are summarized once per block with their count and first
+original exception, including errors caught by the generated Python. The
+message detail is capped at 400 characters. Remaining errors still propagate
+normally. This feedback does not change the solver, relax its acceptance
+criteria, or provide a recovery target.
 
 ## Trust model:
 

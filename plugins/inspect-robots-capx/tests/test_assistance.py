@@ -154,6 +154,50 @@ def test_local_ik_receives_arm_cursor_and_never_calls_perception() -> None:
         policy.close()
 
 
+def test_caught_ik_errors_are_reported_once_per_code_block() -> None:
+    requests: list[dict[str, Any]] = []
+
+    def reject(
+        position: npt.NDArray[np.float64],
+        quat: npt.NDArray[np.float64],
+        seed: npt.NDArray[np.float64],
+    ) -> npt.NDArray[np.float64]:
+        raise ValueError("IK did not converge: position_error_m=0.2\nrevise target")
+
+    code = (
+        "for _ in range(25):\n"
+        "    try:\n"
+        "        solve_ik([0.4, 0, 0.3], [1, 0, 0, 0])\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "move_to_joints([0.01, 0.0])"
+    )
+    policy = CapxPolicy(
+        model="scripted",
+        base_url="http://test/v1",
+        wire="responses",
+        assistance="ik",
+        ik_solver=reject,
+        env={},
+        transport=_transport(code, requests),
+    )
+    try:
+        policy.bind(_info())
+        policy.reset(Scene("s", "restore"))
+        policy.act(_observation())
+        report = str(policy._messages[-1]["content"])
+        assert report.count("[capx] IK rejected") == 1
+        assert "25 request(s)" in report
+        assert "ValueError: IK did not converge: position_error_m=0.2 revise target" in report
+        assert "Traceback" not in report
+        # Counters belong to one execution, even when the namespace persists.
+        assert policy._sandbox is not None
+        clean = policy._sandbox.execute("print('clean')")
+        assert clean.stderr == ""
+    finally:
+        policy.close()
+
+
 @pytest.mark.parametrize("profile", ["full", "invalid"])
 def test_unimplemented_levels_fail_before_constructing_clients(profile: str) -> None:
     with pytest.raises(ValueError, match="assistance must"):

@@ -216,6 +216,14 @@ env -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
   .venv/bin/python -m pytest -q plugins/inspect-robots-ocbench/tests/test_fk_sim.py
 ```
 
+### IK execution feedback
+
+CaP-X adds at most one IK diagnostic line per code block: the rejection count
+and the first original error, even when Python catches that error. The detail
+is bounded to 400 characters. It appears in execution feedback and, with live
+transcripts enabled, the terminal. The diagnostic does not change the solver
+or supply a target pose or Hanoi transfer strategy.
+
 ### Live visualization with Rerun
 
 Install the optional viewer once. This does not change the standard runtime
