@@ -327,7 +327,9 @@ class OCBenchEmbodiment:
     def _joint_state(self) -> npt.NDArray[np.float32]:
         raw = self._env.unwrapped
         opening = np.clip(raw.data.qpos[raw._gripper_opening_joint_id] / 0.8, 0, 1)
-        return np.concatenate([raw.data.qpos[raw._arm_joint_ids], [opening]]).astype(np.float32)
+        return np.asarray(
+            np.concatenate([raw.data.qpos[raw._arm_joint_ids], [opening]]), dtype=np.float32
+        )
 
     def _observe(self) -> Observation:
         timestamp = self._steps / 30

@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 from conftest import CapxStub
@@ -107,7 +108,7 @@ def test_helper_error_becomes_stderr_instead_of_crashing(capx_stub: CapxStub) ->
 )
 def test_depth_accepts_raw_array_and_zero_arg_callable(
     capx_stub: CapxStub,
-    depth_factory: Callable[[np.ndarray], Any],
+    depth_factory: Callable[[npt.NDArray[np.float32]], Any],
 ) -> None:
     sandbox, _, _ = _sandbox(capx_stub)
     depth = np.array([[0.5, 0.6], [0.7, 0.8]], dtype=np.float32)

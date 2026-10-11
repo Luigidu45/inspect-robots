@@ -109,7 +109,7 @@ class FakeEnv:
 
 def test_registered_embodiment_declares_workspace_runtime_remediation() -> None:
     """Keep doctor aligned with the locked workspace installation path."""
-    assert ocbench_embodiment.RUNTIME_REQUIREMENTS == {
+    assert getattr(ocbench_embodiment, "RUNTIME_REQUIREMENTS", None) == {
         "ocbench": "uv sync --all-packages --extra ocbench",
         "pyarrow": "uv sync --all-packages --extra ocbench",
     }

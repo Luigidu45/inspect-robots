@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 from pathlib import Path
 from typing import Any
@@ -31,7 +32,7 @@ def load_episode_actions(
         raise ValueError(f"reset protocol requires seven-dimensional actions, got {feature!r}")
 
     try:
-        import pyarrow.dataset as pads  # type: ignore[import-not-found]
+        pads = importlib.import_module("pyarrow.dataset")
     except ImportError as exc:
         raise ImportError(
             "Loading the Hanoi dataset requires pyarrow; install it in the OCBench runtime"

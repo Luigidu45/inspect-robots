@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 from inspect_robots.embodiment import EmbodimentInfo
@@ -108,9 +109,13 @@ def test_none_only_installs_motion_and_uses_astra_responses() -> None:
 
 def test_local_ik_receives_arm_cursor_and_never_calls_perception() -> None:
     requests: list[dict[str, Any]] = []
-    seeds: list[np.ndarray] = []
+    seeds: list[npt.NDArray[np.float64]] = []
 
-    def solve(position: np.ndarray, quat: np.ndarray, seed: np.ndarray) -> np.ndarray:
+    def solve(
+        position: npt.NDArray[np.float64],
+        quat: npt.NDArray[np.float64],
+        seed: npt.NDArray[np.float64],
+    ) -> npt.NDArray[np.float64]:
         seeds.append(seed.copy())
         assert np.array_equal(position, [0.4, 0.0, 0.3])
         assert np.array_equal(quat, [1.0, 0.0, 0.0, 0.0])
@@ -161,7 +166,9 @@ def test_none_rejects_injected_ik() -> None:
 
 
 @pytest.mark.parametrize("bad_joints", [np.array([0.0]), np.array([np.nan, 0.0])])
-def test_invalid_local_ik_result_becomes_execution_feedback(bad_joints: np.ndarray) -> None:
+def test_invalid_local_ik_result_becomes_execution_feedback(
+    bad_joints: npt.NDArray[np.float64],
+) -> None:
     replies = iter(["solve_ik([0.4, 0, 0.3], [1, 0, 0, 0])", "FINISH"])
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -194,7 +201,7 @@ def test_sam3_ik_exposes_only_segmentation_and_local_ik(empty: bool) -> None:
 
     model_requests: list[dict[str, Any]] = []
     service_requests: list[httpx.Request] = []
-    seeds: list[np.ndarray] = []
+    seeds: list[npt.NDArray[np.float64]] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/segment"
@@ -209,7 +216,11 @@ def test_sam3_ik_exposes_only_segmentation_and_local_ik(empty: bool) -> None:
         }
         return httpx.Response(200, json={"results": [] if empty else [result]})
 
-    def solve(position: np.ndarray, quaternion: np.ndarray, seed: np.ndarray) -> np.ndarray:
+    def solve(
+        position: npt.NDArray[np.float64],
+        quaternion: npt.NDArray[np.float64],
+        seed: npt.NDArray[np.float64],
+    ) -> npt.NDArray[np.float64]:
         seeds.append(seed.copy())
         return np.array([0.1, -0.1])
 
