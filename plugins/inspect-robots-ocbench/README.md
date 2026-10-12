@@ -42,6 +42,29 @@ in the reviewed runtime. The physical regression test in `tests/test_fk_sim.py`
 checks the pinch frame, FK/IK round trips, and isolation from simulator and IK
 state. Re-run that test when upgrading OCBench before comparing FK variants.
 
+`MotionFeedbackController` is an optional 30 Hz controller for the adapter's
+seven absolute targets. It plays a complete policy chunk, measures its endpoint
+error, and can hold that requested endpoint for a bounded number of steps using
+`SettlingConfig`. Holds still pass through the rollout's approver and count
+toward the task budget. The controller never steps the simulator or calls a
+model during a hold. Trial state lives in the rollout store; instantiate one
+controller per sequential evaluation and call `finalize_trial(record)` from the
+runner's trial-end hook to retain final and interrupted execution reports.
+
+The next policy observation contains only a compact `motion_feedback` summary.
+Both agent formats expose the same summary and send only its latest snapshot.
+Full command arrays remain in local audit records. The adapter snapshots intent
+before review from controller action metadata, records approved targets and
+normalized deltas, and reconstructs actuator targets from the reviewed
+OCBench delta-control implementation. Without that metadata, pre-review intent
+is unknown rather than inferred from the approved action.
+
+The hold ends on sustained target agreement or timeout. It is not a velocity
+test, grasp detector, collision planner or object-stability check. FK metrics
+are optional; joint and gripper errors use separate tolerances. A multi-move
+CaP-X block gets one endpoint check after its whole chunk. No Hanoi plan or
+object geometry is embedded in this controller.
+
 Success requires OCBench success, healthy physics and no task failure. A
 policy's `FINISH` request does not imply success. This package does not include
 an LLM or a training pipeline. The `capx` policy connects to a separately

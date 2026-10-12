@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from inspect_robots.rollout import TrialRecord
 from inspect_robots_agent._anthropic import _DEFAULT_MAX_OUTPUT_TOKENS, AnthropicClient
 from inspect_robots_agent._depth import depth_parts, resolve_depth
+from inspect_robots_agent._feedback import latest_motion_feedback, motion_feedback_part
 from inspect_robots_agent._gemini_live import GeminiLiveClient
 from inspect_robots_agent._interactions import InteractionsClient
 from inspect_robots_agent._llm import (
@@ -1047,6 +1048,8 @@ class LLMAgentPolicy(PolicyBase):
                     self._image_horizon,
                     mark_anchor=isinstance(self._client, (AnthropicClient, ResponsesClient)),
                 )
+            if self._wire not in {"gemini-live", "interactions"}:
+                outgoing = latest_motion_feedback(outgoing)
             message = self._client.complete(
                 outgoing,
                 toolset.schemas(),
@@ -1287,7 +1290,11 @@ class LLMAgentPolicy(PolicyBase):
             narration = "These frames follow the motion."
 
         toolset = self._toolset
-        if pending.target is not None and toolset is not None:
+        if (
+            pending.target is not None
+            and toolset is not None
+            and "motion_feedback" not in observation.extra
+        ):
             residual = toolset.residual(pending.target, observation)
             if residual is not None:
                 label, magnitude = residual
@@ -1422,6 +1429,9 @@ def _observation_content(
     if narration is not None:
         lines.append(narration)
     parts.append({"type": "text", "text": "\n".join(lines)})
+    feedback = motion_feedback_part(observation)
+    if feedback is not None:
+        parts.append(feedback)
     parts.extend(_image_parts(observation, reveal=reveal, depth=depth))
     return parts
 

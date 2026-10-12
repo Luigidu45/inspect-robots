@@ -244,6 +244,70 @@ Wire captures currently retain response bodies, not response headers, so they
 cannot reconstruct historical `Retry-After` or `x-ratelimit-*` values. Notices
 do not provide an account-wide usage history.
 
+### Measured execution and bounded endpoint settling
+
+Add `--motion-feedback` to any of the three reset modes to report the previous
+chunk's measured outcome in the next policy observation. With no other changes,
+this variant executes the same number of actions as the baseline.
+
+Add `--settle-max-steps 30` to hold each chunk's final requested configuration
+for up to one additional simulated second. The controller checks measured
+joint and gripper errors after every step, ending the hold when the target
+agrees for three consecutive samples or the hold budget expires. Every hold
+passes through the approver and counts toward the task's 7,000-step budget.
+There are no model requests during the hold and no wall-clock sleeps.
+
+| Variant | Flags | Added model calls for execution | Added physical steps |
+| --- | --- | --- | --- |
+| Baseline | None | 0 | 0 |
+| Feedback | `--motion-feedback` | 0 | 0 |
+| Feedback and settling | `--motion-feedback --settle-max-steps 30` | 0 | At most 30 per chunk |
+
+The feedback summary has a 320-character limit, plus its label. Only the latest
+structured summary is sent in each Chat/Responses request; earlier summaries remain in the
+local transcript. This bounds the feedback's prompt contribution without
+compacting the rest of the conversation. Stateful Live/Interactions wires retain
+append-only history. The tokenizer and the model's own
+reply determine actual token usage; fewer requests over a complete autonomous
+reset have not yet been demonstrated.
+
+Default tolerances are 0.01 rad for each arm joint and 0.02 normalized opening
+for the gripper. When `--robot-fk` is also enabled, checks additionally require
+pinch-position error within 0.002 m and orientation error within 0.02 rad.
+The `--settle-*-tolerance*` options and `--settle-stable-steps` configure these
+criteria. Tolerances and the hold budget are recorded in the task metadata and
+summary. Task names and protocol identifiers distinguish feedback/hold variants.
+Apply identical settings to `agent`, `capx-none`, and `capx-ik` when comparing them.
+
+The controller holds the model's endpoint; it does not select objects, plan
+transfers, or decide a Hanoi solution. In CaP-X it operates after the whole
+Python block's chunk, not between individual helper calls inside that block.
+Target agreement does not certify a grasp, low velocity, or stable objects.
+Object contact may prevent the gripper from reaching its target and produce a
+timeout. The reported arm, spatial and gripper errors remain separate.
+
+Complete reports live in `motion_feedback_reports` in the run summary and
+`motion_feedback` in trial metadata. Per-step `execution_command` diagnostics
+distinguish the requested action before review, the approved action, the
+normalized delta, the bounded actuator target, and the measured configuration.
+`last_approved_configuration` replaces the misleading diagnostic name
+`last_requested_configuration`. Spatial errors are absent when FK is disabled.
+
+Validate the three policy interfaces and physical tracking without an API key:
+
+```bash
+env -u PYTHONPATH PYTHONNOUSERSITE=1 MUJOCO_GL=egl \
+  .venv/bin/python experiments/capx_hanoi/validate_feedback.py \
+  --dataset-root datasets/ocbench-hanoi-triple-task2 \
+  --output logs/audit/motion-feedback.json
+```
+
+This diagnostic replays one recorded initial scene and tests a small wrist
+offset with mocked model replies. It compares baseline, feedback-only and
+bounded settling for all three interfaces, blocks outbound socket connections,
+and records error, control-step count and feedback size. It does not evaluate
+autonomous reset success or visual planning.
+
 ### Live visualization with Rerun
 
 Install the optional viewer once. This does not change the standard runtime

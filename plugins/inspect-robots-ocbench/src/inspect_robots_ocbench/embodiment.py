@@ -78,6 +78,7 @@ class OCBenchEmbodiment:
         self._instruction = ""
         self._steps = 0
         self._control_diagnostics: dict[str, Any] = {}
+        self._last_execution_step: dict[str, Any] = {}
         self.reset_provenance: dict[str, Any] = {}
         self.info = EmbodimentInfo(
             name="ocbench",
@@ -182,6 +183,7 @@ class OCBenchEmbodiment:
         self._instruction = scene.instruction
         self._steps = 0
         self._control_diagnostics = {}
+        self._last_execution_step = {}
         return self._observe()
 
     def step(self, action: Action) -> StepResult:
@@ -189,11 +191,12 @@ class OCBenchEmbodiment:
         if self._env is None:
             raise RuntimeError("Call reset before step")
         normalized = self._normalized_action(action.data)
+        command = self._execution_command(action, normalized)
         _, reward, terminated, truncated, info = self._env.step(normalized)
         self._steps += 1
         success = bool(info["success"] and info["healthy"] and not info["failure"])
         failure = bool(info["failure"] or not info["healthy"])
-        diagnostics = self._record_control(action, info)
+        diagnostics = self._record_control(action, info, command)
         return StepResult(
             observation=self._observe(),
             reward=float(reward),
@@ -214,10 +217,37 @@ class OCBenchEmbodiment:
         """Return evaluation-only tracking evidence, excluding object geometry."""
         return deepcopy(self._control_diagnostics)
 
-    def _record_control(self, action: Action, info: dict[str, Any]) -> dict[str, Any]:
+    def _execution_command(
+        self, action: Action, normalized: npt.NDArray[np.float32]
+    ) -> dict[str, Any]:
+        """Snapshot pre-review intent and the bounded actuator target before stepping."""
+        raw = self._env.unwrapped
+        current = np.concatenate(
+            [
+                raw.data.qpos[raw._arm_joint_ids],
+                [raw.data.qpos[raw._gripper_opening_joint_id] / 0.8],
+            ]
+        )
+        target = current + normalized * raw._joint_action_delta
+        target = np.clip(target, self.info.action_space.low, self.info.action_space.high)
+        return {
+            "requested_configuration": action.meta.get("motion_requested_configuration"),
+            "approved_configuration": np.asarray(action.data, dtype=np.float64).tolist(),
+            "normalized_delta": normalized.tolist(),
+            "actuator_target_configuration": target.tolist(),
+            "phase": action.meta.get("motion_phase"),
+        }
+
+    def _record_control(
+        self, action: Action, info: dict[str, Any], command: dict[str, Any]
+    ) -> dict[str, Any]:
         observed = self._joint_state().astype(np.float64)
-        requested = np.asarray(action.data, dtype=np.float64)
-        error = requested - observed
+        approved = np.asarray(action.data, dtype=np.float64)
+        error = approved - observed
+        self._last_execution_step = {
+            **deepcopy(command),
+            "observed_configuration": observed.tolist(),
+        }
         reasons = []
         if not info["healthy"]:
             reasons.append("outside_workspace")
@@ -244,7 +274,8 @@ class OCBenchEmbodiment:
             ),
             "last_joint_tracking_error_rad": error[:6].tolist(),
             "last_gripper_tracking_error": float(error[6]),
-            "last_requested_configuration": requested.tolist(),
+            "last_approved_configuration": approved.tolist(),
+            "last_execution_command": deepcopy(self._last_execution_step),
             "last_observed_configuration": observed.tolist(),
             "failure_reasons": sorted(set(previous.get("failure_reasons", [])) | set(reasons)),
         }
@@ -252,6 +283,7 @@ class OCBenchEmbodiment:
             "joint_tracking_error_rad": error[:6].tolist(),
             "gripper_tracking_error": float(error[6]),
             "failure_reasons": reasons,
+            "execution_command": deepcopy(self._last_execution_step),
         }
 
     def _normalized_action(self, data: Any) -> npt.NDArray[np.float32]:
@@ -409,6 +441,9 @@ class OCBenchEmbodiment:
             instruction=self._instruction,
             state_time=timestamp,
             image_times=dict.fromkeys(_CAMERAS, timestamp),
+            extra={"execution_step": deepcopy(self._last_execution_step)}
+            if self._last_execution_step.get("requested_configuration") is not None
+            else {},
         )
 
 
@@ -534,11 +569,13 @@ class OCBenchHanoiResetEmbodiment(OCBenchEmbodiment):
         """Advance reset control and terminate only on restoration or physical failure."""
         if self._env is None:
             raise RuntimeError("Call reset before step")
-        _, _, _, truncated, info = self._env.step(self._normalized_action(action.data))
+        normalized = self._normalized_action(action.data)
+        command = self._execution_command(action, normalized)
+        _, _, _, truncated, info = self._env.step(normalized)
         self._steps += 1
         raw = self._env.unwrapped
         failure = bool(info["failure"] or not info["healthy"])
-        diagnostics = self._record_control(action, info)
+        diagnostics = self._record_control(action, info, command)
         restored = bool(raw._is_tower_on_peg(raw.cur_task_info["init_peg"]))
         released = bool(self._joint_state()[-1] >= 0.5)
         self._restore_streak = self._restore_streak + 1 if restored and released else 0

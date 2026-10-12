@@ -41,6 +41,7 @@ from inspect_robots_agent import (
     resolve_provider,
 )
 from inspect_robots_agent._capture import WireCapture, _safe
+from inspect_robots_agent._feedback import latest_motion_feedback, motion_feedback_part
 from inspect_robots_capx._assistance import IKSolver, assistance_helpers
 from inspect_robots_capx._motion import MotionQueue
 from inspect_robots_capx._sandbox import CodeSandbox, ExecutionResult
@@ -651,7 +652,7 @@ class CapxPolicy(PolicyBase):
                 )
             started = time.monotonic()
             message = self._client.complete(
-                self._messages,
+                latest_motion_feedback(self._messages),
                 [],
                 temperature=self._temperature,
                 reasoning_effort=self._effort,
@@ -867,6 +868,9 @@ def _observation_content(
         lines.append(f"Instruction: {observation.instruction}")
     lines.extend(_state_lines(observation, state_labels))
     parts.append({"type": "text", "text": "\n".join(lines)})
+    feedback = motion_feedback_part(observation)
+    if feedback is not None:
+        parts.append(feedback)
     for name, image in observation.images.items():
         parts.append({"type": "text", "text": f"camera {name!r}:"})
         parts.append({"type": "image_url", "image_url": {"url": png_data_url(image)}})

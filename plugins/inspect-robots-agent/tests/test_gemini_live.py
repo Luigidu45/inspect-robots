@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -167,6 +168,31 @@ def test_default_endpoint_and_pending_setup_are_socketless() -> None:
     assert isinstance(policy._client, GeminiLiveClient)
     assert policy._client._setup == {"model": "models/gemini-robotics-er-2-streaming-preview"}
     assert "secret" not in json.dumps(policy.config.__dict__)
+
+
+def test_physical_summaries_preserve_live_append_only_history(
+    server_factory: Callable[..., StubBidiServer],
+    tmp_path: Path,
+) -> None:
+    server = server_factory([[tool_call("first")], [tool_call("second")]])
+    policy = LLMAgentPolicy(
+        model="test/model", base_url=server.url, wire="gemini-live", wire_capture=False, env={}
+    )
+    robot = CubePickEmbodiment()
+    policy.bind(robot.info)
+    scene = Scene("feedback", "check feedback transport")
+    policy.reset(scene)
+    observation = robot.reset(scene, seed=0)
+    try:
+        for summary in ("old physical result", "new physical result"):
+            policy.act(replace(observation, extra={"motion_feedback": {"summary": summary}}))
+        assert "Motion feedback: old physical result" in str(policy._messages)
+        assert "Motion feedback: new physical result" in str(policy._messages)
+        assert len(server.connections) == 1
+    finally:
+        policy.on_trial_end(
+            TrialRecord(scene_id=scene.id, epoch=0, seed=0), str(tmp_path), "feedback-test"
+        )
 
 
 def test_normal_step_orders_observation_before_tool_response_and_empty_trigger(

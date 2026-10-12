@@ -5,12 +5,18 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 import numpy as np
-from inspect_robots_ocbench import OCBenchHanoiResetEmbodiment, hanoi_reset_task
+from inspect_robots_ocbench import (
+    MotionFeedbackController,
+    OCBenchHanoiResetEmbodiment,
+    SettlingConfig,
+    hanoi_reset_task,
+)
 from reset_data import load_episode_actions
 
 from inspect_robots import eval
@@ -75,7 +81,11 @@ def _build_policy(args: argparse.Namespace, robot: OCBenchHanoiResetEmbodiment) 
     )
 
 
-def _attach_diagnostics(policy: Any, robot: OCBenchHanoiResetEmbodiment) -> None:
+def _attach_diagnostics(
+    policy: Any,
+    robot: OCBenchHanoiResetEmbodiment,
+    controller: MotionFeedbackController | None = None,
+) -> None:
     """Add evaluation evidence without changing the native agent's control behavior."""
     original = getattr(policy, "on_trial_end", None)
 
@@ -85,6 +95,8 @@ def _attach_diagnostics(policy: Any, robot: OCBenchHanoiResetEmbodiment) -> None
                 original(record, log_dir, run_id)
         finally:
             record.metadata["robot_diagnostics"] = robot.control_diagnostics
+            if controller is not None:
+                controller.finalize_trial(record)
 
     policy.on_trial_end = finish
 
@@ -168,6 +180,22 @@ def main() -> int:
         help="All policies: expose robot-only world pinch XYZ/WXYZ as a separate variant.",
     )
     parser.add_argument("--num-scenes", type=int)
+    parser.add_argument(
+        "--motion-feedback",
+        action="store_true",
+        help="All policies: compact measured execution feedback as a separate variant.",
+    )
+    parser.add_argument(
+        "--settle-max-steps",
+        type=int,
+        default=0,
+        help="Extra endpoint hold steps per chunk, without LLM calls; requires --motion-feedback.",
+    )
+    parser.add_argument("--settle-stable-steps", type=int, default=3)
+    parser.add_argument("--settle-joint-tolerance-rad", type=float, default=0.01)
+    parser.add_argument("--settle-gripper-tolerance", type=float, default=0.02)
+    parser.add_argument("--settle-position-tolerance-m", type=float, default=0.002)
+    parser.add_argument("--settle-orientation-tolerance-rad", type=float, default=0.02)
     parser.add_argument(
         "--max-llm-calls",
         type=int,
@@ -270,6 +298,19 @@ def main() -> int:
         args.policy != "capx" or args.capx_max_queued_steps < 1
     ):
         parser.error("--capx-max-queued-steps requires --policy capx and a positive value")
+    try:
+        settling = SettlingConfig(
+            max_steps=args.settle_max_steps,
+            stable_steps=args.settle_stable_steps,
+            joint_tolerance_rad=args.settle_joint_tolerance_rad,
+            gripper_tolerance=args.settle_gripper_tolerance,
+            position_tolerance_m=args.settle_position_tolerance_m,
+            orientation_tolerance_rad=args.settle_orientation_tolerance_rad,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    if settling != SettlingConfig() and not args.motion_feedback:
+        parser.error("--settle-* options require --motion-feedback")
     if args.policy == "agent" and args.assistance is not None:
         parser.error("--assistance is only supported with --policy capx")
     if args.policy == "capx" and args.images != "always":
@@ -304,14 +345,55 @@ def main() -> int:
         robot_fk=args.robot_fk,
     )
     episode_ids = [int(scene.metadata["dataset_episode"]) for scene in task.scenes]
+    if args.motion_feedback:
+        variant = f"-feedback-hold{settling.max_steps}"
+        task = replace(
+            task,
+            name=task.name + variant,
+            metadata={
+                **task.metadata,
+                "protocol": str(task.metadata["protocol"]).removesuffix("-v1") + variant + "-v1",
+                "motion_feedback": True,
+                "settling": asdict(settling),
+                "feedback_history": "latest-only-v1",
+            },
+        )
     episode_actions = load_episode_actions(args.dataset_root, episode_ids)
     robot = OCBenchHanoiResetEmbodiment(
         episode_actions,
         expose_reference_images=args.goal_mode == "reference",
         expose_robot_fk=args.robot_fk,
     )
+    if args.motion_feedback:
+        robot.info = replace(
+            robot.info,
+            docs=(robot.info.docs or "")
+            + (
+                " Motion feedback measures chunk endpoint agreement. 'outside' names exceeded "
+                "tolerances: "
+                f"arm={settling.joint_tolerance_rad:g} rad, "
+                f"gripper={settling.gripper_tolerance:g} normalized opening. "
+                + (
+                    f"Pinch position={settling.position_tolerance_m:g} m and "
+                    f"orientation={settling.orientation_tolerance_rad:g} rad. "
+                    if args.robot_fk
+                    else ""
+                )
+                + f"Automatic endpoint holds: up to {settling.max_steps} extra 30 Hz steps, "
+                f"ending on {settling.stable_steps} consecutive agreeing samples or timeout. "
+                "Holds make no model calls. Agreement does not certify grasp or object stability."
+            ),
+        )
     policy = _build_policy(args, robot)
-    _attach_diagnostics(policy, robot)
+    controller = (
+        MotionFeedbackController(
+            settling,
+            forward_kinematics=robot.forward_kinematics if args.robot_fk else None,
+        )
+        if args.motion_feedback
+        else None
+    )
+    _attach_diagnostics(policy, robot, controller)
     sinks = _build_sinks(args)
     if args.rerun:
         suffix = f" on port {args.rerun_port}" if args.rerun_port is not None else ""
@@ -326,6 +408,7 @@ def main() -> int:
             policy,
             robot,
             approver=guard,
+            controller=controller,
             sinks=sinks,
             log_dir=args.log_dir,
             store_frames=True,
@@ -372,6 +455,8 @@ def main() -> int:
             "rerun_port": args.rerun_port,
             "goal_mode": args.goal_mode,
             "robot_fk": args.robot_fk,
+            "motion_feedback": args.motion_feedback,
+            "settling": asdict(settling) if args.motion_feedback else None,
             "split": args.split,
             "dataset_root": str(args.dataset_root.resolve()),
             "dataset_episodes": episode_ids,
@@ -384,6 +469,9 @@ def main() -> int:
             else None,
             "robot_diagnostics": [
                 metadata.get("robot_diagnostics", {}) for metadata in trial_evidence
+            ],
+            "motion_feedback_reports": [
+                metadata.get("motion_feedback", []) for metadata in trial_evidence
             ],
             "termination_reasons": [
                 reason for sample in log.samples for reason in sample.termination_reasons

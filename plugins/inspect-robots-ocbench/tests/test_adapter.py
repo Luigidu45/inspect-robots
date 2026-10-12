@@ -29,6 +29,25 @@ from inspect_robots_ocbench.embodiment import (
 )
 
 
+def test_command_trace_separates_intent_approval_and_adapter_target(simulator: Any) -> None:
+    robot = OCBenchEmbodiment()
+    robot.reset(Scene("trace", "check execution"), seed=0)
+    intent = np.array([0.5, 0, 0, 0, 0, 0, 0.5])
+    approved = intent.copy()
+    approved[0] = 0.3
+    result = robot.step(Action(approved, meta={"motion_requested_configuration": intent.tolist()}))
+    trace = result.observation.extra["execution_step"]
+    assert trace["requested_configuration"][0] == 0.5
+    assert trace["approved_configuration"][0] == 0.3
+    assert trace["normalized_delta"][0] == 1
+    assert trace["actuator_target_configuration"][0] == pytest.approx(0.18)
+    assert trace["observed_configuration"][0] == 0
+    assert "last_requested_configuration" not in robot.control_diagnostics
+    assert robot.control_diagnostics["last_approved_configuration"][0] == 0.3
+    trace["approved_configuration"][0] = 999
+    assert robot.control_diagnostics["last_approved_configuration"][0] == 0.3
+
+
 class FakeEnv:
     def __init__(self) -> None:
         self.unwrapped = self

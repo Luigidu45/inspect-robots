@@ -22,10 +22,12 @@ from inspect_robots.types import Action, Observation, StepResult
 
 
 @pytest.mark.parametrize("robot_fk", [False, True])
+@pytest.mark.parametrize("feedback", [False, True])
 def test_reset_runner_counts_success_without_sending_reference_images(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     robot_fk: bool,
+    feedback: bool,
 ) -> None:
     """The default reset must count success and send only current cameras."""
     experiment = Path(__file__).parents[1]
@@ -67,6 +69,9 @@ def test_reset_runner_counts_success_without_sending_reference_images(
         )
 
     class World(OCBenchHanoiResetEmbodiment):
+        def forward_kinematics(self, joint_pos: Any) -> tuple[Any, Any]:
+            return np.array([0.4, 0.1, 0.3]), np.array([1, 0, 0, 0])
+
         def reset(self, scene: Scene, *, seed: int | None = None) -> Observation:
             image = np.zeros((224, 224, 3), dtype=np.uint8)
             extra = (
@@ -131,7 +136,8 @@ def test_reset_runner_counts_success_without_sending_reference_images(
             "--log-dir",
             str(tmp_path / "logs"),
         ]
-        + (["--robot-fk"] if robot_fk else []),
+        + (["--robot-fk"] if robot_fk else [])
+        + (["--motion-feedback", "--settle-max-steps", "1"] if feedback else []),
     )
 
     assert run_reset.main() == 0
@@ -142,9 +148,20 @@ def test_reset_runner_counts_success_without_sending_reference_images(
     assert summary["policy"] == "agent"
     assert summary["max_llm_calls"] == 64
     assert summary["goal_mode"] == "text"
-    expected_protocol = "ocbench-hanoi-text-reset-30hz" + ("-fk" if robot_fk else "") + "-v1"
+    expected_protocol = (
+        "ocbench-hanoi-text-reset-30hz"
+        + ("-fk" if robot_fk else "")
+        + ("-feedback-hold1" if feedback else "")
+        + "-v1"
+    )
     assert summary["protocol"] == expected_protocol
     assert summary["robot_fk"] is robot_fk
+    assert summary["motion_feedback"] is feedback
+    if feedback:
+        report = summary["motion_feedback_reports"][0][0]
+        assert report["execution"] == "partial"
+        assert report["played_steps"] == 1 and report["hold_steps"] == 0
+        assert report["end_reason"] == "success"
     assert summary["rerun"] is False and summary["rerun_port"] is None
     contents = requests[0]["input"][-1]["content"]
     assert sum(part["type"] == "input_image" for part in contents) == 3

@@ -1,0 +1,1 @@
+**Agent and CaP-X plugins:** display a bounded physical execution summary in the next observation. Stateless request views send only the latest structured summary while retaining older summaries in the local transcript; stateful Live and Interactions wires preserve append-only history.
